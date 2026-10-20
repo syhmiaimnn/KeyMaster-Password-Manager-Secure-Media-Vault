@@ -117,3 +117,19 @@ app.*.symbols
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
 !/dev/ci/**/Gemfile.lock
+
+# Custom Rules for KeyMaster
+
+# Environment variables and secret keys (IMPORTANT for security)
+.env
+*.env
+config.json
+
+# Node.js backend dependencies and logs
+server/node_modules/
+server/dist/
+server/npm-debug.log*
+
+# System & OS files
+.DS_Store
+Thumbs.db
