@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:device_preview/device_preview.dart';
+import 'pin_setup_screen.dart';
 
 void main() {
-  runApp(const KeyMasterApp());
+  runApp(
+    DevicePreview(
+      enabled: true, // Enables device frame preview in Chrome / Windows
+      builder: (context) => const KeyMasterApp(),
+    ),
+  );
 }
 
 class KeyMasterApp extends StatelessWidget {
@@ -10,6 +17,8 @@ class KeyMasterApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      locale: DevicePreview.locale(context),
+      builder: DevicePreview.appBuilder,
       title: 'KeyMaster',
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -28,14 +37,15 @@ class WelcomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
+      body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24.0),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              const Spacer(),
               const Icon(
-                Icons.shield_rounded,
+                Icons.shield_outlined,
                 size: 80,
                 color: Colors.blueAccent,
               ),
@@ -57,7 +67,7 @@ class WelcomeScreen extends StatelessWidget {
                   color: Colors.grey,
                 ),
               ),
-              const SizedBox(height: 40),
+              const Spacer(),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blueAccent,
@@ -67,13 +77,19 @@ class WelcomeScreen extends StatelessWidget {
                   ),
                 ),
                 onPressed: () {
-                  // TODO: Navigate to PIN Creation / Onboarding
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const PinSetupScreen(),
+                    ),
+                  );
                 },
                 child: const Text(
                   'Get Started',
                   style: TextStyle(fontSize: 16, color: Colors.white),
                 ),
               ),
+              const SizedBox(height: 24),
             ],
           ),
         ),
