@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'add_item_dialog.dart';
+import 'vault_item.dart';
 
 class VaultDashboardScreen extends StatefulWidget {
   const VaultDashboardScreen({super.key});
@@ -10,6 +11,7 @@ class VaultDashboardScreen extends StatefulWidget {
 
 class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
   int _selectedIndex = 0;
+  final List<VaultItem> _vaultItems = [];
 
   @override
   Widget build(BuildContext context) {
@@ -86,14 +88,14 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
                     _buildCategoryCard(
                       icon: Icons.key,
                       title: 'Passwords',
-                      count: '0 items',
+                      count: '${_vaultItems.where((item) => item.type == 'Password').length} items',
                       color: Colors.blueAccent,
                       onTap: () {},
                     ),
                     _buildCategoryCard(
                       icon: Icons.photo_library,
                       title: 'Media Vault',
-                      count: '0 items',
+                      count: '${_vaultItems.where((item) => item.type == 'Note').length} items',
                       color: Colors.purpleAccent,
                       onTap: () {},
                     ),
@@ -132,6 +134,17 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
           );
 
           if (result != null && result['title'] != null && result['title']!.isNotEmpty) {
+            setState(() {
+              _vaultItems.add(VaultItem(
+                id: DateTime.now().millisecondsSinceEpoch.toString(),
+                type: result['type']!,
+                title: result['title']!,
+                username: result['username'] ?? '',
+                password: result['password'] ?? '',
+                note: result['note'] ?? '',
+              ));
+            });
+
             if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
