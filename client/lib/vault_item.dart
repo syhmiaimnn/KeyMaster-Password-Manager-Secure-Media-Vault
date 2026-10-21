@@ -2,11 +2,12 @@ import 'dart:convert';
 
 class VaultItem {
   final String id;
-  final String type; // 'Password' or 'Note'
+  final String type; // 'Password', 'Note', or 'Media'
   final String title;
   final String username;
   final String password;
   final String note;
+  final String mediaPath; // Path to securely stored photo/document
   final DateTime createdAt;
 
   VaultItem({
@@ -16,6 +17,7 @@ class VaultItem {
     this.username = '',
     this.password = '',
     this.note = '',
+    this.mediaPath = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
 
@@ -26,6 +28,7 @@ class VaultItem {
         'username': username,
         'password': password,
         'note': note,
+        'mediaPath': mediaPath,
         'createdAt': createdAt.toIso8601String(),
       };
 
@@ -36,6 +39,7 @@ class VaultItem {
         username: json['username'] as String? ?? '',
         password: json['password'] as String? ?? '',
         note: json['note'] as String? ?? '',
+        mediaPath: json['mediaPath'] as String? ?? '',
         createdAt: DateTime.parse(json['createdAt'] as String),
       );
 
