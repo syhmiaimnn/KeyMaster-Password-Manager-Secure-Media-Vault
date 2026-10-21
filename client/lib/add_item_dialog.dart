@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 
 class AddItemDialog extends StatefulWidget {
@@ -8,12 +9,25 @@ class AddItemDialog extends StatefulWidget {
 }
 
 class _AddItemDialogState extends State<AddItemDialog> {
-  String _itemType = 'Password'; // Default selection
+  String _itemType = 'Password';
   final _titleController = TextEditingController();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   final _noteController = TextEditingController();
   bool _obscurePassword = true;
+
+  // Function to generate a secure random password
+  void _generatePassword() {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#\$%^&*()_+';
+    final random = Random();
+    // Generate a 16-character secure password
+    final password = List.generate(16, (index) => chars[random.nextInt(chars.length)]).join();
+    
+    setState(() {
+      _passwordController.text = password;
+      _obscurePassword = false; // Show the generated password so they can see it
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -47,7 +61,6 @@ class _AddItemDialogState extends State<AddItemDialog> {
               ],
             ),
             const SizedBox(height: 16),
-            // Item Type Selector
             SegmentedButton<String>(
               segments: const [
                 ButtonSegment(
@@ -69,7 +82,6 @@ class _AddItemDialogState extends State<AddItemDialog> {
               },
             ),
             const SizedBox(height: 20),
-            // Title Input
             TextField(
               controller: _titleController,
               style: const TextStyle(color: Colors.white),
@@ -82,8 +94,6 @@ class _AddItemDialogState extends State<AddItemDialog> {
               ),
             ),
             const SizedBox(height: 16),
-
-            // Form fields for Password
             if (_itemType == 'Password') ...[
               TextField(
                 controller: _usernameController,
@@ -107,21 +117,32 @@ class _AddItemDialogState extends State<AddItemDialog> {
                   filled: true,
                   fillColor: const Color(0xFF2A2A2A),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility : Icons.visibility_off,
-                      color: Colors.grey,
-                    ),
-                    onPressed: () {
-                      setState(() {
-                        _obscurePassword = !_obscurePassword;
-                      });
-                    },
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Generate Password Button
+                      IconButton(
+                        icon: const Icon(Icons.refresh, color: Colors.blueAccent),
+                        tooltip: 'Generate Strong Password',
+                        onPressed: _generatePassword,
+                      ),
+                      // Toggle visibility
+                      IconButton(
+                        icon: Icon(
+                          _obscurePassword ? Icons.visibility : Icons.visibility_off,
+                          color: Colors.grey,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _obscurePassword = !_obscurePassword;
+                          });
+                        },
+                      ),
+                    ],
                   ),
                 ),
               ),
             ] else ...[
-              // Form fields for Secure Note
               TextField(
                 controller: _noteController,
                 maxLines: 4,
@@ -136,8 +157,6 @@ class _AddItemDialogState extends State<AddItemDialog> {
               ),
             ],
             const SizedBox(height: 24),
-
-            // Save Button
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blueAccent,
@@ -147,7 +166,6 @@ class _AddItemDialogState extends State<AddItemDialog> {
                 ),
               ),
               onPressed: () {
-                // Return data back to vault
                 Navigator.pop(context, {
                   'type': _itemType,
                   'title': _titleController.text,

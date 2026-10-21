@@ -10,7 +10,17 @@ class SecurityService {
   Future<void> savePin(String pin) async {
     await _storage.write(key: _pinKey, value: pin);
   }
+// Verify if entered PIN matches stored PIN
+  Future<bool> verifyPin(String enteredPin) async {
+    String? storedPin = await getPin();
+    return storedPin == enteredPin;
+  }
 
+  // Check if a PIN has already been created
+  Future<bool> hasPin() async {
+    String? pin = await getPin();
+    return pin != null && pin.isNotEmpty;
+  }
   // Get stored PIN
   Future<String?> getPin() async {
     return await _storage.read(key: _pinKey);
