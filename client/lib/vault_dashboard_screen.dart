@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'add_item_dialog.dart';
 
 class VaultDashboardScreen extends StatefulWidget {
   const VaultDashboardScreen({super.key});
@@ -20,7 +21,7 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: () {
-              // Settings screen placeholder
+              // Settings placeholder
             },
           ),
         ],
@@ -119,8 +120,26 @@ class _VaultDashboardScreenState extends State<VaultDashboardScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: Colors.blueAccent,
-        onPressed: () {
-          // Add new item dialog placeholder
+        onPressed: () async {
+          final result = await showModalBottomSheet<Map<String, String>>(
+            context: context,
+            isScrollControlled: true,
+            backgroundColor: const Color(0xFF1E1E1E),
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            builder: (context) => const AddItemDialog(),
+          );
+
+          if (result != null && result['title'] != null && result['title']!.isNotEmpty) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Saved "${result['title']}" to Vault!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
         },
         child: const Icon(Icons.add, color: Colors.white),
       ),
