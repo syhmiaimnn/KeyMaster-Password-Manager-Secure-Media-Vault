@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'security_service.dart';
+import 'vault_dashboard_screen.dart';
 
 class PinSetupScreen extends StatefulWidget {
   const PinSetupScreen({super.key});
@@ -12,7 +14,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
   final TextEditingController _confirmPinController = TextEditingController();
   String? _errorMessage;
 
-  void _handlePinSubmit() {
+void _handlePinSubmit() async {
     String pin = _pinController.text.trim();
     String confirmPin = _confirmPinController.text.trim();
 
@@ -34,26 +36,17 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
       _errorMessage = null;
     });
 
-    // Success dialog preview
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        title: const Text('Master PIN Set!', style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Your Master PIN has been configured successfully.',
-          style: TextStyle(color: Colors.grey),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              // TODO: Save encrypted key locally and navigate to main dashboard
-            },
-            child: const Text('Continue', style: TextStyle(color: Colors.blueAccent)),
-          ),
-        ],
-      ),
+    // Save PIN securely to storage
+    final securityService = SecurityService();
+    await securityService.savePin(pin);
+
+    if (!mounted) return;
+
+    // Navigate straight to Vault Dashboard
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const VaultDashboardScreen()),
+      (route) => false,
     );
   }
 
