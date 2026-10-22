@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:device_preview/device_preview.dart';
+import 'package:flutter/foundation.dart';
 import 'security_service.dart';
 import 'pin_setup_screen.dart';
 import 'unlock_screen.dart';
 import 'clipboard_service.dart';
 
 void main() async {
+  
   WidgetsFlutterBinding.ensureInitialized();
 
   final securityService = SecurityService();
