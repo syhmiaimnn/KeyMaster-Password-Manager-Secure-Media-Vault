@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'clipboard_service.dart';
 import 'add_item_dialog.dart';
 import 'security_service.dart';
 import 'vault_item.dart';
@@ -95,7 +95,7 @@ void _showItemDetails(VaultItem item) {
                           IconButton(
                             icon: const Icon(Icons.copy, color: Colors.blueAccent, size: 20),
                             onPressed: () {
-                              Clipboard.setData(ClipboardData(text: item.username));
+                              ClipboardService.copySensitive(item.username);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(content: Text('Username copied to clipboard!')),
                               );
@@ -131,9 +131,9 @@ void _showItemDetails(VaultItem item) {
                               IconButton(
                                 icon: const Icon(Icons.copy, color: Colors.blueAccent, size: 20),
                                 onPressed: () {
-                                  Clipboard.setData(ClipboardData(text: item.password));
+                                  ClipboardService.copySensitive(item.password);
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Password copied to clipboard!')),
+                                    const SnackBar(content: Text('Password copied. The clipboard is cleared in 30 seconds.')),
                                   );
                                 },
                               ),

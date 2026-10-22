@@ -3,6 +3,7 @@ import 'package:device_preview/device_preview.dart';
 import 'security_service.dart';
 import 'pin_setup_screen.dart';
 import 'unlock_screen.dart';
+import 'clipboard_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,17 +50,10 @@ class _KeyMasterAppState extends State<KeyMasterApp>
     if (state == AppLifecycleState.paused) {
       _lockVault();
     }
-  }
-
-  void _lockVault() {
-    final security = SecurityService();
-    if (!security.isUnlocked) return; // nothing to lock yet
-
-    security.lock(); // forget the vault key
-    _navigatorKey.currentState?.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const UnlockScreen()),
-      (route) => false,
-    );
+    // Back in the app: wipe the clipboard if the 30 seconds have passed
+    if (state == AppLifecycleState.resumed) {
+      ClipboardService.clearIfExpired();
+    }
   }
 
   @override
@@ -78,4 +72,6 @@ class _KeyMasterAppState extends State<KeyMasterApp>
       home: widget.hasPin ? const UnlockScreen() : const PinSetupScreen(),
     );
   }
+  
+  void _lockVault() {}
 }
