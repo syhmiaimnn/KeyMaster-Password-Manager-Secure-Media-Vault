@@ -1,30 +1,71 @@
 import 'package:flutter/material.dart';
 import 'package:device_preview/device_preview.dart';
 import 'security_service.dart';
-import 'vault_dashboard_screen.dart';
 import 'pin_setup_screen.dart';
+import 'unlock_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   final securityService = SecurityService();
-  bool hasPin = await securityService.hasPin();
+  final bool hasPin = await securityService.hasPin();
 
   runApp(
     DevicePreview(
-      enabled: true,
+      enabled: true, // Fix 8 changes this line
       builder: (context) => KeyMasterApp(hasPin: hasPin),
     ),
   );
 }
 
-class KeyMasterApp extends StatelessWidget {
+class KeyMasterApp extends StatefulWidget {
   final bool hasPin;
   const KeyMasterApp({super.key, required this.hasPin});
 
   @override
+  State<KeyMasterApp> createState() => _KeyMasterAppState();
+}
+
+class _KeyMasterAppState extends State<KeyMasterApp>
+    with WidgetsBindingObserver {
+  // Lets us change screens from outside a widget (when the app locks)
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // paused = the app is no longer visible (Home button, app switcher, screen off)
+    if (state == AppLifecycleState.paused) {
+      _lockVault();
+    }
+  }
+
+  void _lockVault() {
+    final security = SecurityService();
+    if (!security.isUnlocked) return; // nothing to lock yet
+
+    security.lock(); // forget the vault key
+    _navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const UnlockScreen()),
+      (route) => false,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       locale: DevicePreview.locale(context),
       builder: DevicePreview.appBuilder,
       debugShowCheckedModeBanner: false,
@@ -34,7 +75,7 @@ class KeyMasterApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF121212),
         primarySwatch: Colors.blue,
       ),
-      home: hasPin ? const VaultDashboardScreen() : const PinSetupScreen(),
+      home: widget.hasPin ? const UnlockScreen() : const PinSetupScreen(),
     );
   }
 }
