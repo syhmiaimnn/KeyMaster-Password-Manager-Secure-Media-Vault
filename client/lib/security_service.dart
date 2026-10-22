@@ -46,13 +46,11 @@ class SecurityService {
       bool canCheck = await _localAuth.canCheckBiometrics || await _localAuth.isDeviceSupported();
       if (!canCheck) return false;
 
-      return await _localAuth.authenticate(
-        localizedReason: 'Authenticate to access KeyMaster Vault',
-        options: const AuthenticationOptions(
-          biometricOnly: true,
-          stickyAuth: true,
-        ),
-      );
+    return await _localAuth.authenticate(
+  localizedReason: 'Authenticate to unlock KeyMaster',
+  biometricOnly: true,
+  persistAcrossBackgrounding: true,
+);
     } catch (_) {
       return false;
     }
