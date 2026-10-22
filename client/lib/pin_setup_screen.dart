@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'security_service.dart';
 import 'vault_dashboard_screen.dart';
 
@@ -13,36 +14,55 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
   final TextEditingController _pinController = TextEditingController();
   final TextEditingController _confirmPinController = TextEditingController();
   String? _errorMessage;
+  bool _enableBiometrics = true;
+  bool _isWorking = false;
 
-void _handlePinSubmit() async {
-    String pin = _pinController.text.trim();
-    String confirmPin = _confirmPinController.text.trim();
+  @override
+  void dispose() {
+    _pinController.dispose();
+    _confirmPinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handlePinSubmit() async {
+    if (_isWorking) return;
+
+    final pin = _pinController.text.trim();
+    final confirmPin = _confirmPinController.text.trim();
 
     if (pin.length < 6) {
-      setState(() {
-        _errorMessage = 'PIN must be at least 6 digits long.';
-      });
+      setState(() => _errorMessage = 'PIN must be at least 6 digits long.');
       return;
     }
-
     if (pin != confirmPin) {
-      setState(() {
-        _errorMessage = 'PINs do not match. Please try again.';
-      });
+      setState(() => _errorMessage = 'PINs do not match. Please try again.');
       return;
     }
 
     setState(() {
       _errorMessage = null;
+      _isWorking = true;
     });
 
-    // Save PIN securely to storage
-    final securityService = SecurityService();
-    await securityService.savePin(pin);
+    try {
+      // Creates the vault key, wraps it with the PIN and leaves the vault unlocked.
+      await SecurityService().setupVault(
+        pin,
+        enableBiometrics: _enableBiometrics,
+      );
+      } catch (e, stack) {
+      debugPrint('setupVault failed: $e\n$stack');
+      if (!mounted) return;
+      setState(() {
+        _isWorking = false;
+        _errorMessage = 'Could not create the vault: $e';
+      });
+      return;
+    }
 
     if (!mounted) return;
 
-    // Navigate straight to Vault Dashboard
+    // Go straight to the Vault Dashboard
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (context) => const VaultDashboardScreen()),
@@ -70,7 +90,7 @@ void _handlePinSubmit() async {
               ),
               const SizedBox(height: 8),
               const Text(
-                'This Master PIN encrypts your local vault key. Keep it safe—it cannot be recovered if lost.',
+                'This Master PIN protects the key to your vault. Keep it safe: it cannot be recovered if lost.',
                 style: TextStyle(fontSize: 14, color: Colors.grey),
               ),
               const SizedBox(height: 32),
@@ -78,6 +98,7 @@ void _handlePinSubmit() async {
                 controller: _pinController,
                 obscureText: true,
                 keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 maxLength: 6,
                 style: const TextStyle(color: Colors.white, letterSpacing: 8, fontSize: 20),
                 decoration: InputDecoration(
@@ -93,6 +114,7 @@ void _handlePinSubmit() async {
                 controller: _confirmPinController,
                 obscureText: true,
                 keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 maxLength: 6,
                 style: const TextStyle(color: Colors.white, letterSpacing: 8, fontSize: 20),
                 decoration: InputDecoration(
@@ -101,6 +123,21 @@ void _handlePinSubmit() async {
                   filled: true,
                   fillColor: const Color(0xFF1E1E1E),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _enableBiometrics,
+                onChanged: _isWorking
+                    ? null
+                    : (value) => setState(() => _enableBiometrics = value),
+                title: const Text(
+                  'Unlock with biometrics',
+                  style: TextStyle(color: Colors.white),
+                ),
+                subtitle: const Text(
+                  'You can always use your PIN instead.',
+                  style: TextStyle(color: Colors.grey),
                 ),
               ),
               if (_errorMessage != null) ...[
@@ -118,7 +155,13 @@ void _handlePinSubmit() async {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
                 onPressed: _handlePinSubmit,
-                child: const Text('Save Master PIN', style: TextStyle(fontSize: 16, color: Colors.white)),
+                child: _isWorking
+                    ? const SizedBox(
+                        height: 22,
+                        width: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Text('Save Master PIN', style: TextStyle(fontSize: 16, color: Colors.white)),
               ),
             ],
           ),

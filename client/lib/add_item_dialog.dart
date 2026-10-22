@@ -1,5 +1,5 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
+import 'password_generator.dart';
 
 class AddItemDialog extends StatefulWidget {
   const AddItemDialog({super.key});
@@ -15,17 +15,27 @@ class _AddItemDialogState extends State<AddItemDialog> {
   final _passwordController = TextEditingController();
   final _noteController = TextEditingController();
   bool _obscurePassword = true;
+  double _passwordLength = 16;
+  bool _useSymbols = true;
 
-  // Function to generate a secure random password
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
+    _noteController.dispose();
+    super.dispose();
+  }
+
   void _generatePassword() {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#\$%^&*()_+';
-    final random = Random();
-    // Generate a 16-character secure password
-    final password = List.generate(16, (index) => chars[random.nextInt(chars.length)]).join();
-    
+    final password = PasswordGenerator.generate(
+      length: _passwordLength.round(),
+      useSymbols: _useSymbols,
+    );
+
     setState(() {
       _passwordController.text = password;
-      _obscurePassword = false; // Show the generated password so they can see it
+      _obscurePassword = false; // show it so the user can see what was made
     });
   }
 
@@ -140,6 +150,35 @@ class _AddItemDialogState extends State<AddItemDialog> {
                       ),
                     ],
                   ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Text(
+                    'Length: ${_passwordLength.round()}',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      value: _passwordLength,
+                      min: 8,
+                      max: 32,
+                      divisions: 24,
+                      label: _passwordLength.round().toString(),
+                      onChanged: (value) => setState(() => _passwordLength = value),
+                    ),
+                  ),
+                ],
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                value: _useSymbols,
+                onChanged: (value) => setState(() => _useSymbols = value),
+                title: const Text(
+                  'Include symbols (!@#%...)',
+                  style: TextStyle(color: Colors.white),
                 ),
               ),
             ] else ...[
