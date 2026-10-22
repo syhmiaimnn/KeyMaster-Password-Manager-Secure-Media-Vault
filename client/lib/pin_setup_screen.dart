@@ -50,11 +50,12 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
         pin,
         enableBiometrics: _enableBiometrics,
       );
-    } catch (_) {
+      } catch (e, stack) {
+      debugPrint('setupVault failed: $e\n$stack');
       if (!mounted) return;
       setState(() {
         _isWorking = false;
-        _errorMessage = 'Could not create the vault. Please try again.';
+        _errorMessage = 'Could not create the vault: $e';
       });
       return;
     }
