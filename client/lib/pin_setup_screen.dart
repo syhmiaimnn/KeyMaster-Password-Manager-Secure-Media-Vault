@@ -60,6 +60,8 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
       return;
     }
 
+
+
     if (!mounted) return;
 
     // Go straight to the Vault Dashboard
