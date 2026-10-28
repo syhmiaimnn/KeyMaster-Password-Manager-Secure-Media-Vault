@@ -7,7 +7,10 @@ class VaultItem {
   final String username;
   final String password;
   final String note;
-  final String mediaPath; // Path to securely stored photo/document
+  final String mediaPath; // file name of the encrypted photo in the app's private folder
+  final String mimeType; // 'image/jpeg' for photos, empty for passwords and notes
+  final int sizeBytes; // size of the stored photo, 0 for passwords and notes
+  final String fileKey; // this photo's own random 32-byte key, as base64
   final DateTime createdAt;
 
   VaultItem({
@@ -18,8 +21,13 @@ class VaultItem {
     this.password = '',
     this.note = '',
     this.mediaPath = '',
+    this.mimeType = '',
+    this.sizeBytes = 0,
+    this.fileKey = '',
     DateTime? createdAt,
   }) : createdAt = createdAt ?? DateTime.now();
+
+  bool get isPhoto => type == 'Media' && mimeType.startsWith('image/');
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -29,6 +37,9 @@ class VaultItem {
         'password': password,
         'note': note,
         'mediaPath': mediaPath,
+        'mimeType': mimeType,
+        'sizeBytes': sizeBytes,
+        'fileKey': fileKey,
         'createdAt': createdAt.toIso8601String(),
       };
 
@@ -40,6 +51,9 @@ class VaultItem {
         password: json['password'] as String? ?? '',
         note: json['note'] as String? ?? '',
         mediaPath: json['mediaPath'] as String? ?? '',
+        mimeType: json['mimeType'] as String? ?? '',
+        sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+        fileKey: json['fileKey'] as String? ?? '',
         createdAt: DateTime.parse(json['createdAt'] as String),
       );
 

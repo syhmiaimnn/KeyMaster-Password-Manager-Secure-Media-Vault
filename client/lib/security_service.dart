@@ -54,6 +54,31 @@ class SecurityService {
   bool get isUnlocked => _vaultKey != null;
 
   // ---------------------------------------------------------------
+  // Auto-lock pause (used while the gallery or camera is open)
+  // ---------------------------------------------------------------
+
+  /// How long the app may stay covered by the gallery or camera before it
+  /// locks itself anyway.
+  static const Duration autoLockGrace = Duration(minutes: 5);
+
+  DateTime? _autoLockPausedUntil;
+
+  /// Call just before opening the gallery or the camera.
+  void pauseAutoLock() {
+    _autoLockPausedUntil = DateTime.now().add(autoLockGrace);
+  }
+
+  /// Call as soon as the gallery or camera has closed.
+  void resumeAutoLock() {
+    _autoLockPausedUntil = null;
+  }
+
+  bool get isAutoLockPaused {
+    final until = _autoLockPausedUntil;
+    return until != null && DateTime.now().isBefore(until);
+  }
+
+  // ---------------------------------------------------------------
   // Setup
   // ---------------------------------------------------------------
 
@@ -81,7 +106,7 @@ class SecurityService {
     await _storage.write(key: _saltKey, value: base64Encode(salt));
     await _storage.write(key: _itemsKey, value: emptyItems);
     if (enableBiometrics) {
-      // Interim design, replaced in Phase 1 (see the notes below this code)
+      // Interim design, replaced in Phase 1
       await _storage.write(
         key: _biometricCopyKey,
         value: base64Encode(vaultKey),

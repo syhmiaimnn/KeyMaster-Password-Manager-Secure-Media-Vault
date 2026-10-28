@@ -76,7 +76,7 @@ void _showItemDetails(VaultItem item) {
                           Navigator.pop(context);
                           await _deleteItem(item.id);
                           if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
+                             ScaffoldMessenger.of(this.context).showSnackBar(
                             SnackBar(content: Text('Deleted "${item.title}"')),
                           );
                         },
@@ -265,7 +265,7 @@ void _showItemDetails(VaultItem item) {
 
             await _addItem(newItem);
 
-            if (!mounted) return;
+               if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('Saved "${newItem.title}" securely!'),
