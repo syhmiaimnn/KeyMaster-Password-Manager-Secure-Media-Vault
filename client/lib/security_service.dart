@@ -54,28 +54,33 @@ class SecurityService {
   bool get isUnlocked => _vaultKey != null;
 
   // ---------------------------------------------------------------
-  // Auto-lock pause (used while the gallery or camera is open)
+  // How the salt and the wrapped vault key are stored
   // ---------------------------------------------------------------
+  //
+  // Old format (Phase 0 to 2): two values, 'vault_salt' and
+  // 'vault_wrapped_key'.
+  // New format (written by changePin): one value 'vault_wrapped_key' that
+  // reads "v2.<salt>.<wrapped key>". One value means one write, so a crash
+  // in the middle of a PIN change can never leave a new salt next to an old
+  // wrapped key (which would lock you out for good).
+  // Both formats are read, so existing vaults keep working.
 
-  /// How long the app may stay covered by the gallery or camera before it
-  /// locks itself anyway.
-  static const Duration autoLockGrace = Duration(minutes: 5);
+  static String _encodeWrap(Uint8List salt, String wrapped) =>
+      'v2.${base64Encode(salt)}.$wrapped';
 
-  DateTime? _autoLockPausedUntil;
+  Future<({Uint8List salt, String wrapped})?> _loadWrap() async {
+    final stored = await _storage.read(key: _wrappedVaultKey);
+    if (stored == null) return null;
 
-  /// Call just before opening the gallery or the camera.
-  void pauseAutoLock() {
-    _autoLockPausedUntil = DateTime.now().add(autoLockGrace);
-  }
+    if (stored.startsWith('v2.')) {
+      final parts = stored.split('.');
+      if (parts.length != 3) return null;
+      return (salt: base64Decode(parts[1]), wrapped: parts[2]);
+    }
 
-  /// Call as soon as the gallery or camera has closed.
-  void resumeAutoLock() {
-    _autoLockPausedUntil = null;
-  }
-
-  bool get isAutoLockPaused {
-    final until = _autoLockPausedUntil;
-    return until != null && DateTime.now().isBefore(until);
+    final saltText = await _storage.read(key: _saltKey);
+    if (saltText == null) return null;
+    return (salt: base64Decode(saltText), wrapped: stored);
   }
 
   // ---------------------------------------------------------------
@@ -84,9 +89,7 @@ class SecurityService {
 
   /// True once a vault has been created on this phone.
   Future<bool> hasPin() async {
-    final salt = await _storage.read(key: _saltKey);
-    final wrapped = await _storage.read(key: _wrappedVaultKey);
-    return salt != null && wrapped != null;
+    return await _loadWrap() != null;
   }
 
   /// First run: create the vault key, wrap it with the PIN, leave it unlocked.
@@ -106,7 +109,7 @@ class SecurityService {
     await _storage.write(key: _saltKey, value: base64Encode(salt));
     await _storage.write(key: _itemsKey, value: emptyItems);
     if (enableBiometrics) {
-      // Interim design, replaced in Phase 1
+      // Interim design, replaced in Phase 1 (see the notes below this code)
       await _storage.write(
         key: _biometricCopyKey,
         value: base64Encode(vaultKey),
@@ -135,33 +138,58 @@ class SecurityService {
     return left.isNegative ? Duration.zero : left;
   }
 
-  Future<UnlockResult> unlockWithPin(String pin) async {
+  /// Wrong PINs since the last good unlock.
+  Future<int> failedAttempts() async {
+    final text = await _storage.read(key: _failedAttemptsKey);
+    return int.tryParse(text ?? '') ?? 0;
+  }
+
+  /// Checks a PIN. On success it also returns the vault key it unlocked.
+  /// Wrong PINs are counted and can trigger a lockout.
+  Future<({UnlockResult result, Uint8List? key})> _checkPin(String pin) async {
     final wait = await lockoutRemaining();
     if (wait > Duration.zero) {
-      return UnlockResult(UnlockStatus.lockedOut, wait: wait);
+      return (
+        result: UnlockResult(UnlockStatus.lockedOut, wait: wait),
+        key: null,
+      );
     }
 
-    final saltText = await _storage.read(key: _saltKey);
-    final wrapped = await _storage.read(key: _wrappedVaultKey);
-    if (saltText == null || wrapped == null) {
-      return const UnlockResult(UnlockStatus.wrongPin);
+    final wrap = await _loadWrap();
+    if (wrap == null) {
+      return (result: const UnlockResult(UnlockStatus.wrongPin), key: null);
     }
 
-    final unlockKey =
-        await _crypto.deriveUnlockKey(pin, base64Decode(saltText));
+    final unlockKey = await _crypto.deriveUnlockKey(pin, wrap.salt);
+    final Uint8List key;
     try {
       // A wrong PIN gives a wrong unlock key, so this throws.
-      _vaultKey = await _crypto.decrypt(wrapped, unlockKey, aad: _wrapAad);
+      key = await _crypto.decrypt(wrap.wrapped, unlockKey, aad: _wrapAad);
     } catch (_) {
-      return _registerFailure();
+      return (result: await _registerFailure(), key: null);
     }
     await _resetAttempts();
-    return const UnlockResult(UnlockStatus.success);
+    return (result: const UnlockResult(UnlockStatus.success), key: key);
+  }
+
+  Future<UnlockResult> unlockWithPin(String pin) async {
+    final check = await _checkPin(pin);
+    final key = check.key;
+    if (key != null) _vaultKey = key;
+    return check.result;
+  }
+
+  /// Checks a PIN without changing whether the vault is locked. Use it before
+  /// a sensitive action.
+  Future<UnlockResult> verifyPin(String pin) async {
+    final check = await _checkPin(pin);
+    final key = check.key;
+    if (key != null) key.fillRange(0, key.length, 0);
+    return check.result;
   }
 
   Future<UnlockResult> _registerFailure() async {
-    final text = await _storage.read(key: _failedAttemptsKey);
-    final failed = (int.tryParse(text ?? '') ?? 0) + 1;
+    final failed = (await failedAttempts()) + 1;
     await _storage.write(key: _failedAttemptsKey, value: '$failed');
 
     final delay = _delayFor(failed);
@@ -192,11 +220,73 @@ class SecurityService {
   }
 
   // ---------------------------------------------------------------
-  // Unlock with biometrics
+  // Change the Master PIN
+  // ---------------------------------------------------------------
+
+  /// Re-wraps the same vault key under a new PIN. Your passwords and photos
+  /// are not re-encrypted, because they are protected by the vault key, which
+  /// does not change. Returns the result of checking [currentPin].
+  Future<UnlockResult> changePin(String currentPin, String newPin) async {
+    final check = await _checkPin(currentPin);
+    final vaultKey = check.key;
+    if (vaultKey == null) return check.result;
+
+    final salt = _crypto.randomBytes(16);
+    final unlockKey = await _crypto.deriveUnlockKey(newPin, salt);
+    final wrapped = await _crypto.encrypt(vaultKey, unlockKey, aad: _wrapAad);
+
+    // One single write (see the notes near the top of this file).
+    await _storage.write(
+      key: _wrappedVaultKey,
+      value: _encodeWrap(salt, wrapped),
+    );
+    await _storage.delete(key: _saltKey); // the old salt is not used any more
+
+    _vaultKey = vaultKey;
+    return check.result;
+  }
+
+  // ---------------------------------------------------------------
+  // Biometrics
   // ---------------------------------------------------------------
 
   Future<bool> isBiometricEnabled() async {
     return await _storage.read(key: _biometricCopyKey) != null;
+  }
+
+  /// True when the phone has a fingerprint or face sensor that is set up.
+  Future<bool> isBiometricSupported() async {
+    try {
+      return await _localAuth.isDeviceSupported() &&
+          await _localAuth.canCheckBiometrics;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Turn biometric unlock on. The user must prove themselves once first.
+  /// The vault must be unlocked, because the key copy comes from memory.
+  Future<bool> enableBiometrics() async {
+    final key = _vaultKey;
+    if (key == null) return false;
+    try {
+      if (!await isBiometricSupported()) return false;
+      final ok = await _localAuth.authenticate(
+        localizedReason: 'Confirm to turn on biometric unlock',
+        biometricOnly: true,
+        persistAcrossBackgrounding: true,
+      );
+      if (!ok) return false;
+      // Interim design, replaced in Phase 1 (see the notes below this code)
+      await _storage.write(key: _biometricCopyKey, value: base64Encode(key));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> disableBiometrics() async {
+    await _storage.delete(key: _biometricCopyKey);
   }
 
   Future<bool> authenticateWithBiometrics() async {
@@ -250,5 +340,42 @@ class SecurityService {
     if (packed == null || packed.isEmpty) return [];
     final plain = await _crypto.decrypt(packed, key, aad: _itemsAad);
     return VaultItem.deserializeList(utf8.decode(plain));
+  }
+
+  // ---------------------------------------------------------------
+  // Erase everything
+  // ---------------------------------------------------------------
+
+  /// Deletes every value KeyMaster saved in secure storage: the wrapped key,
+  /// the encrypted items, the biometric copy, the counters and the settings.
+  /// The caller deletes the photo files (see wipe_service.dart).
+  Future<void> wipeAll() async {
+    lock();
+    await _storage.deleteAll();
+  }
+
+  // ---------------------------------------------------------------
+  // Auto-lock pause (used while the gallery or camera is open)
+  // ---------------------------------------------------------------
+
+  /// How long the app may stay covered by the gallery or camera before it
+  /// locks itself anyway.
+  static const Duration autoLockGrace = Duration(minutes: 5);
+
+  DateTime? _autoLockPausedUntil;
+
+  /// Call just before opening the gallery or the camera.
+  void pauseAutoLock() {
+    _autoLockPausedUntil = DateTime.now().add(autoLockGrace);
+  }
+
+  /// Call as soon as the gallery or camera has closed.
+  void resumeAutoLock() {
+    _autoLockPausedUntil = null;
+  }
+
+  bool get isAutoLockPaused {
+    final until = _autoLockPausedUntil;
+    return until != null && DateTime.now().isBefore(until);
   }
 }

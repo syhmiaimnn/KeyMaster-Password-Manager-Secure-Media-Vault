@@ -7,11 +7,17 @@ class VaultItem {
   final String username;
   final String password;
   final String note;
+  final String website; // optional, for passwords
+  final bool favorite;
   final String mediaPath; // file name of the encrypted photo in the app's private folder
   final String mimeType; // 'image/jpeg' for photos, empty for passwords and notes
   final int sizeBytes; // size of the stored photo, 0 for passwords and notes
   final String fileKey; // this photo's own random 32-byte key, as base64
   final DateTime createdAt;
+
+  /// When the password (or note text) was last changed. It starts equal to
+  /// [createdAt]. The Security Center uses it to find old passwords.
+  final DateTime updatedAt;
 
   VaultItem({
     required this.id,
@@ -20,14 +26,47 @@ class VaultItem {
     this.username = '',
     this.password = '',
     this.note = '',
+    this.website = '',
+    this.favorite = false,
     this.mediaPath = '',
     this.mimeType = '',
     this.sizeBytes = 0,
     this.fileKey = '',
     DateTime? createdAt,
-  }) : createdAt = createdAt ?? DateTime.now();
+    DateTime? updatedAt,
+  })  : createdAt = createdAt ?? DateTime.now(),
+        updatedAt = updatedAt ?? createdAt ?? DateTime.now();
 
   bool get isPhoto => type == 'Media' && mimeType.startsWith('image/');
+  bool get isPassword => type == 'Password';
+  bool get isNote => type == 'Note';
+
+  VaultItem copyWith({
+    String? title,
+    String? username,
+    String? password,
+    String? note,
+    String? website,
+    bool? favorite,
+    DateTime? updatedAt,
+  }) {
+    return VaultItem(
+      id: id,
+      type: type,
+      title: title ?? this.title,
+      username: username ?? this.username,
+      password: password ?? this.password,
+      note: note ?? this.note,
+      website: website ?? this.website,
+      favorite: favorite ?? this.favorite,
+      mediaPath: mediaPath,
+      mimeType: mimeType,
+      sizeBytes: sizeBytes,
+      fileKey: fileKey,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -36,26 +75,37 @@ class VaultItem {
         'username': username,
         'password': password,
         'note': note,
+        'website': website,
+        'favorite': favorite,
         'mediaPath': mediaPath,
         'mimeType': mimeType,
         'sizeBytes': sizeBytes,
         'fileKey': fileKey,
         'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt.toIso8601String(),
       };
 
-  factory VaultItem.fromJson(Map<String, dynamic> json) => VaultItem(
-        id: json['id'] as String,
-        type: json['type'] as String,
-        title: json['title'] as String,
-        username: json['username'] as String? ?? '',
-        password: json['password'] as String? ?? '',
-        note: json['note'] as String? ?? '',
-        mediaPath: json['mediaPath'] as String? ?? '',
-        mimeType: json['mimeType'] as String? ?? '',
-        sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
-        fileKey: json['fileKey'] as String? ?? '',
-        createdAt: DateTime.parse(json['createdAt'] as String),
-      );
+  factory VaultItem.fromJson(Map<String, dynamic> json) {
+    final created = DateTime.parse(json['createdAt'] as String);
+    final updatedText = json['updatedAt'] as String?;
+    return VaultItem(
+      id: json['id'] as String,
+      type: json['type'] as String,
+      title: json['title'] as String,
+      username: json['username'] as String? ?? '',
+      password: json['password'] as String? ?? '',
+      note: json['note'] as String? ?? '',
+      website: json['website'] as String? ?? '',
+      favorite: json['favorite'] as bool? ?? false,
+      mediaPath: json['mediaPath'] as String? ?? '',
+      mimeType: json['mimeType'] as String? ?? '',
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
+      fileKey: json['fileKey'] as String? ?? '',
+      createdAt: created,
+      // Records saved before Phase 3 have no updatedAt: use the creation date.
+      updatedAt: updatedText == null ? created : DateTime.parse(updatedText),
+    );
+  }
 
   static String serializeList(List<VaultItem> items) {
     return jsonEncode(items.map((item) => item.toJson()).toList());

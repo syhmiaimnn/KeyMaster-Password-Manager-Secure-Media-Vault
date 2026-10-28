@@ -3,7 +3,8 @@ import 'package:flutter/services.dart';
 
 /// Copies secrets to the clipboard and wipes them after a short time.
 class ClipboardService {
-  static const Duration clearAfter = Duration(seconds: 30);
+  /// Changed from the Settings screen.
+  static Duration clearAfter = const Duration(seconds: 30);
   static Timer? _timer;
   static DateTime? _clearAt;
 

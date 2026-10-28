@@ -7,8 +7,13 @@ import 'package:image_picker/image_picker.dart';
 import 'media_vault_service.dart';
 import 'media_viewer_screen.dart';
 import 'security_service.dart';
+import 'ui/format.dart';
+import 'ui/theme.dart';
+import 'ui/widgets.dart';
 import 'vault_item.dart';
+import 'vault_store.dart';
 
+/// The Photos tab: a grid of encrypted photos. Long-press to select several.
 class MediaVaultScreen extends StatefulWidget {
   const MediaVaultScreen({super.key});
 
@@ -18,36 +23,18 @@ class MediaVaultScreen extends StatefulWidget {
 
 class _MediaVaultScreenState extends State<MediaVaultScreen> {
   final SecurityService _security = SecurityService();
+  final VaultStore _store = VaultStore.instance;
   final MediaVaultService _media = MediaVaultService();
   final ImagePicker _picker = ImagePicker();
 
-  List<VaultItem> _photos = [];
-  bool _loading = true;
+  final Set<String> _selected = <String>{};
   String? _busyText; // set while photos are being encrypted
+  bool _bannerHidden = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadPhotos();
-  }
+  bool get _selecting => _selected.isNotEmpty;
 
-  Future<void> _loadPhotos() async {
-    try {
-      final items = await _security.loadVaultItems();
-      if (!mounted) return;
-      setState(() {
-        _photos = items.where((item) => item.isPhoto).toList()
-          ..sort((a, b) => b.createdAt.compareTo(a.createdAt)); // newest first
-        _loading = false;
-      });
-    } catch (_) {
-      // The vault locked while loading. The lock screen takes over.
-    }
-  }
-
-  void _say(String text) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  List<VaultItem> get _photos {
+    return _store.photos..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
   // ---------------------------------------------------------------
@@ -60,7 +47,8 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
     try {
       files = await _picker.pickMultiImage();
     } catch (_) {
-      _say('The gallery could not be opened.');
+      if (!mounted) return;
+      showToast(context, 'The gallery could not be opened.', kind: ToastKind.error);
       return;
     } finally {
       _security.resumeAutoLock();
@@ -74,7 +62,8 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
     try {
       shot = await _picker.pickImage(source: ImageSource.camera);
     } catch (_) {
-      _say('The camera could not be opened.');
+      if (!mounted) return;
+      showToast(context, 'The camera could not be opened.', kind: ToastKind.error);
       return;
     } finally {
       _security.resumeAutoLock();
@@ -109,9 +98,7 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
 
     if (imported.isNotEmpty) {
       try {
-        final all = await _security.loadVaultItems();
-        all.addAll(imported.map((photo) => photo.item));
-        await _security.saveVaultItems(all);
+        await _store.addAll(imported.map((photo) => photo.item));
       } catch (_) {
         // The records were not saved, so the files would have no key.
         await _discard(imported);
@@ -123,7 +110,6 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
 
     if (!mounted) return;
     setState(() => _busyText = null);
-    await _loadPhotos();
     await _showReport(imported, failed, firstProblem);
   }
 
@@ -143,219 +129,509 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
     }
   }
 
+  Widget _reportRow(Palette p, IconData icon, Color color, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          IconBadge(icon: icon, color: color, size: 34),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(text, style: AppText.body),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showReport(
     List<ImportedPhoto> imported,
     int failed,
     String? problem,
   ) async {
     if (!mounted) return;
-    final lines = <String>[];
-    if (imported.isNotEmpty) {
-      final withLocation = imported.where((p) => p.report.hadLocation).length;
-      final withCamera = imported.where((p) => p.report.hadCameraInfo).length;
-      lines.add('${imported.length} photo(s) encrypted and saved.');
-      lines.add('Hidden photo data (EXIF) was removed from every photo.');
-      lines.add(withLocation > 0
-          ? 'A GPS location was found and removed in $withLocation photo(s).'
-          : 'No GPS location was found.');
-      lines.add(withCamera > 0
-          ? 'Camera make or model was found and removed in $withCamera photo(s).'
-          : 'No camera details were found.');
-      lines.add('Your original is still in the gallery. Delete it there if you do '
-          'not want it to stay. KeyMaster cannot do that for you yet.');
-    }
-    if (failed > 0) {
-      lines.add('$failed photo(s) could not be imported.');
-      if (problem != null) lines.add(problem);
-    }
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Import finished'),
-        content: Text(lines.join('\n\n')),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
+    final withLocation = imported.where((photo) => photo.report.hadLocation).length;
+    final withCamera = imported.where((photo) => photo.report.hadCameraInfo).length;
+    final tagCount = imported.fold<int>(0, (sum, photo) => sum + photo.report.tagCount);
 
-  // ---------------------------------------------------------------
-  // Opening and deleting
-  // ---------------------------------------------------------------
-
-  Future<void> _open(VaultItem photo) async {
-    final deleteIt = await Navigator.push<bool>(
+    await showAppSheet<void>(
       context,
-      MaterialPageRoute(
-        builder: (context) => MediaViewerScreen(item: photo, media: _media),
-      ),
+      builder: (sheetContext) {
+        final p = Palette.of(sheetContext);
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 0, 22, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                imported.isNotEmpty ? 'Photos secured' : 'Nothing was added',
+                style: AppText.title,
+              ),
+              const SizedBox(height: 16),
+              if (imported.isNotEmpty) ...[
+                _reportRow(
+                  p,
+                  Icons.lock_rounded,
+                  p.success,
+                  imported.length == 1
+                      ? '1 photo encrypted with its own key.'
+                      : '${imported.length} photos encrypted, each with its own key.',
+                ),
+                _reportRow(
+                  p,
+                  Icons.cleaning_services_rounded,
+                  p.accent,
+                  tagCount > 0
+                      ? 'Hidden photo data (EXIF) removed: $tagCount fields.'
+                      : 'Hidden photo data (EXIF) removed from every photo.',
+                ),
+                _reportRow(
+                  p,
+                  Icons.location_off_rounded,
+                  withLocation > 0 ? p.warning : p.success,
+                  withLocation > 0
+                      ? 'A GPS location was found and removed in $withLocation photo(s).'
+                      : 'No GPS location was found.',
+                ),
+                _reportRow(
+                  p,
+                  Icons.photo_camera_rounded,
+                  withCamera > 0 ? p.warning : p.success,
+                  withCamera > 0
+                      ? 'Camera make or model was found and removed in $withCamera photo(s).'
+                      : 'No camera details were found.',
+                ),
+                InfoBanner(
+                  icon: Icons.info_outline_rounded,
+                  text: 'Your original is still in the gallery. Delete it '
+                      'there if you do not want it to stay. KeyMaster cannot '
+                      'do that for you yet.',
+                ),
+              ],
+              if (failed > 0) ...[
+                const SizedBox(height: 14),
+                _reportRow(
+                  p,
+                  Icons.error_outline_rounded,
+                  p.danger,
+                  problem == null
+                      ? '$failed photo(s) could not be imported.'
+                      : '$failed photo(s) could not be imported. $problem',
+                ),
+              ],
+              const SizedBox(height: 10),
+              GradientButton(
+                label: 'Done',
+                onPressed: () => Navigator.pop(sheetContext),
+              ),
+            ],
+          ),
+        );
+      },
     );
-    if (deleteIt == true && mounted) await _deletePhoto(photo);
   }
 
-  Future<void> _deletePhoto(VaultItem photo) async {
+  void _showAddSheet() {
+    showAppSheet<void>(
+      context,
+      builder: (sheetContext) {
+        final p = Palette.of(sheetContext);
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Add photos', style: AppText.title),
+              const SizedBox(height: 6),
+              Text(
+                'They are encrypted and cleaned of hidden data before they are saved.',
+                style: AppText.caption.copyWith(color: p.muted),
+              ),
+              const SizedBox(height: 14),
+              SettingGroup(
+                children: [
+                  SettingTile(
+                    icon: Icons.photo_library_rounded,
+                    color: p.accent,
+                    title: 'Choose from gallery',
+                    subtitle: 'Pick one or many photos',
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _chooseFromGallery();
+                    },
+                  ),
+                  SettingTile(
+                    icon: Icons.photo_camera_rounded,
+                    color: p.primary,
+                    title: 'Take a photo',
+                    subtitle: 'Straight into the vault',
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _takePhoto();
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ---------------------------------------------------------------
+  // Opening, selecting, deleting
+  // ---------------------------------------------------------------
+
+  Future<void> _open(List<VaultItem> photos, int index) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => MediaViewerScreen(
+          photos: photos,
+          initialIndex: index,
+          media: _media,
+          onDelete: _deleteOne,
+        ),
+      ),
+    );
+  }
+
+  /// Used by the viewer. The record (and with it the key) goes first.
+  Future<bool> _deleteOne(VaultItem photo) async {
     try {
-      final all = await _security.loadVaultItems();
-      all.removeWhere((item) => item.id == photo.id);
-      await _security.saveVaultItems(all); // the record, and its key, go first
+      await _store.remove(photo.id);
       await _media.deletePhotoFiles(photo);
+      return true;
     } catch (_) {
-      _say('The photo could not be deleted.');
+      return false;
+    }
+  }
+
+  void _toggle(String id) {
+    tapFeedback();
+    setState(() {
+      if (!_selected.remove(id)) _selected.add(id);
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    final ids = _selected.toList();
+    final ok = await confirmAction(
+      context,
+      title: ids.length == 1 ? 'Delete this photo?' : 'Delete ${ids.length} photos?',
+      message: 'The encrypted copies and their keys are removed from '
+          'KeyMaster. This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+      icon: Icons.delete_outline_rounded,
+    );
+    if (!ok || !mounted) return;
+
+    final doomed = _store.photos.where((photo) => ids.contains(photo.id)).toList();
+    try {
+      await _store.removeMany(ids); // the records, and their keys, go first
+      for (final photo in doomed) {
+        await _media.deletePhotoFiles(photo);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      showToast(context, 'The photos could not be deleted.', kind: ToastKind.error);
       return;
     }
-    await _loadPhotos();
-    _say('Photo deleted.');
+    if (!mounted) return;
+    setState(_selected.clear);
+    showToast(
+      context,
+      doomed.length == 1 ? 'Photo deleted.' : '${doomed.length} photos deleted.',
+      kind: ToastKind.success,
+    );
   }
 
   // ---------------------------------------------------------------
   // Screen
   // ---------------------------------------------------------------
 
-  void _showAddSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+  Widget _header(Palette p, List<VaultItem> photos) {
+    if (_selecting) {
+      return Row(
+        children: [
+          RoundIconButton(
+            icon: Icons.close_rounded,
+            tooltip: 'Cancel',
+            onPressed: () => setState(_selected.clear),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text('${_selected.length} selected', style: AppText.title),
+          ),
+          RoundIconButton(
+            icon: Icons.select_all_rounded,
+            tooltip: 'Select all',
+            onPressed: () => setState(() {
+              _selected
+                ..clear()
+                ..addAll(photos.map((photo) => photo.id));
+            }),
+          ),
+          const SizedBox(width: 8),
+          RoundIconButton(
+            icon: Icons.delete_outline_rounded,
+            tooltip: 'Delete',
+            color: p.danger,
+            onPressed: _deleteSelected,
+          ),
+        ],
+      );
+    }
+
+    final totalBytes = photos.fold<int>(0, (sum, photo) => sum + photo.sizeBytes);
+    return PageTitle(
+      eyebrow: photos.isEmpty
+          ? 'Encrypted gallery'
+          : '${photos.length} ${photos.length == 1 ? 'photo' : 'photos'} · ${formatBytes(totalBytes)}',
+      title: 'Photos',
+    );
+  }
+
+  Widget _banner(Palette p) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 4, 12),
+      decoration: BoxDecoration(
+        color: p.accent.withAlpha(24),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: p.accent.withAlpha(70)),
       ),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library, color: Colors.tealAccent),
-              title: const Text('Choose from gallery',
-                  style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _chooseFromGallery();
-              },
+      child: Row(
+        children: [
+          Icon(Icons.verified_user_rounded, color: p.accent, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Each photo has its own key. Location and camera details are '
+              'removed when you add it.',
+              style: AppText.caption.copyWith(color: p.text),
             ),
-            ListTile(
-              leading: const Icon(Icons.photo_camera, color: Colors.tealAccent),
-              title: const Text('Take a photo',
-                  style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _takePhoto();
-              },
-            ),
-          ],
-        ),
+          ),
+          IconButton(
+            tooltip: 'Hide',
+            onPressed: () => setState(() => _bannerHidden = true),
+            icon: Icon(Icons.close_rounded, size: 18, color: p.muted),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildBody() {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_photos.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(32),
-          child: Text(
-            'No photos yet.\nTap the button to add one. Each photo is encrypted with its own key.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey),
+  Widget _busyCard(Palette p) {
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_busyText!, style: AppText.subtitle.copyWith(fontSize: 14.5)),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: const LinearProgressIndicator(minHeight: 6),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _body(Palette p) {
+    final photos = _photos;
+
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            child: Column(
+              children: [
+                _header(p, photos),
+                if (_busyText != null) ...[
+                  const SizedBox(height: 16),
+                  _busyCard(p),
+                ] else if (!_bannerHidden && !_selecting) ...[
+                  const SizedBox(height: 16),
+                  _banner(p),
+                ],
+              ],
+            ),
           ),
         ),
-      );
-    }
-    return GridView.builder(
-      padding: const EdgeInsets.all(8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 6,
-        mainAxisSpacing: 6,
-      ),
-      itemCount: _photos.length,
-      itemBuilder: (context, index) {
-        final photo = _photos[index];
-        return GestureDetector(
-          onTap: () => _open(photo),
-          child: _ThumbTile(key: ValueKey(photo.id), item: photo, media: _media),
-        );
-      },
+        if (photos.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: EmptyState(
+              icon: Icons.add_photo_alternate_rounded,
+              color: p.accent,
+              title: 'No photos yet',
+              message: 'Add photos you want to keep private. They are '
+                  'encrypted one by one and stripped of hidden data.',
+              actionLabel: 'Add photos',
+              onAction: _busyText == null ? _showAddSheet : null,
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
+            sliver: SliverGrid(
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                crossAxisSpacing: 8,
+                mainAxisSpacing: 8,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final photo = photos[index];
+                  return _PhotoTile(
+                    key: ValueKey<String>(photo.id),
+                    item: photo,
+                    media: _media,
+                    selected: _selected.contains(photo.id),
+                    selecting: _selecting,
+                    onTap: () {
+                      if (_selecting) {
+                        _toggle(photo.id);
+                      } else {
+                        _open(photos, index);
+                      }
+                    },
+                    onLongPress: () => _toggle(photo.id),
+                  );
+                },
+                childCount: photos.length,
+              ),
+            ),
+          ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final p = Palette.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Photo Vault'),
-        backgroundColor: const Color(0xFF121212),
-        elevation: 0,
+      body: SafeArea(
+        bottom: false,
+        child: ListenableBuilder(
+          listenable: _store,
+          builder: (context, child) => _body(p),
+        ),
       ),
-      body: Column(
-        children: [
-          if (_busyText != null) ...[
-            const LinearProgressIndicator(),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(_busyText!, style: const TextStyle(color: Colors.grey)),
+      floatingActionButton: _selecting
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _busyText == null ? _showAddSheet : null,
+              backgroundColor: p.accent,
+              foregroundColor: const Color(0xFF031A18),
+              icon: const Icon(Icons.add_a_photo_rounded),
+              label: const Text(
+                'Add photos',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
             ),
-          ],
-          Expanded(child: _buildBody()),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: Colors.tealAccent,
-        onPressed: _busyText == null ? _showAddSheet : null,
-        child: const Icon(Icons.add_a_photo, color: Colors.black),
-      ),
     );
   }
 }
 
 /// One grid cell. It decrypts its own thumbnail once, when it first appears.
-class _ThumbTile extends StatefulWidget {
+class _PhotoTile extends StatefulWidget {
   final VaultItem item;
   final MediaVaultService media;
+  final bool selected;
+  final bool selecting;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
-  const _ThumbTile({super.key, required this.item, required this.media});
+  const _PhotoTile({
+    super.key,
+    required this.item,
+    required this.media,
+    required this.selected,
+    required this.selecting,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   @override
-  State<_ThumbTile> createState() => _ThumbTileState();
+  State<_PhotoTile> createState() => _PhotoTileState();
 }
 
-class _ThumbTileState extends State<_ThumbTile> {
+class _PhotoTileState extends State<_PhotoTile> {
   late final Future<Uint8List> _thumb = widget.media.readThumbnail(widget.item);
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        color: const Color(0xFF1E1E1E),
-        child: FutureBuilder<Uint8List>(
-          future: _thumb,
-          builder: (context, snapshot) {
-            if (snapshot.hasData) {
-              return Image.memory(
-                snapshot.data!,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-              );
-            }
-            if (snapshot.hasError) {
-              return const Center(
-                child: Icon(Icons.broken_image, color: Colors.grey),
-              );
-            }
-            return const Center(
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+    final p = Palette.of(context);
+    final radius = BorderRadius.circular(14);
+
+    return GestureDetector(
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
+      child: AnimatedScale(
+        scale: widget.selected ? 0.92 : 1,
+        duration: const Duration(milliseconds: 150),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              ColoredBox(
+                color: p.surfaceAlt,
+                child: FutureBuilder<Uint8List>(
+                  future: _thumb,
+                  builder: (context, snapshot) {
+                    if (snapshot.hasData) {
+                      return Image.memory(
+                        snapshot.data!,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      return Center(
+                        child: Icon(Icons.broken_image_rounded, color: p.muted),
+                      );
+                    }
+                    return const Center(
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                ),
               ),
-            );
-          },
+              if (widget.selected)
+                ColoredBox(color: p.primary.withAlpha(70)),
+              if (widget.selecting)
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: widget.selected ? p.primary : Colors.black38,
+                      border: Border.all(color: Colors.white, width: 1.6),
+                    ),
+                    child: widget.selected
+                        ? const Icon(Icons.check_rounded, size: 15, color: Colors.white)
+                        : null,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

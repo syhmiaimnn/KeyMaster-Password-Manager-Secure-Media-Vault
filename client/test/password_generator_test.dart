@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:client/password_generator.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -29,5 +31,44 @@ void main() {
 
   test('two passwords are different', () {
     expect(PasswordGenerator.generate(), isNot(PasswordGenerator.generate()));
+  });
+
+  test('digits only when everything else is switched off', () {
+    for (var i = 0; i < 100; i++) {
+      final password = PasswordGenerator.generate(
+        length: 10,
+        useSymbols: false,
+        useUppercase: false,
+        useLowercase: false,
+      );
+      expect(hasMatch(r'^[0-9]{10}$', password), isTrue);
+    }
+  });
+
+  test('look-alike characters are left out when asked', () {
+    for (var i = 0; i < 300; i++) {
+      final password = PasswordGenerator.generate(
+        length: 24,
+        avoidLookAlikes: true,
+      );
+      expect(hasMatch('[Il1O0o]', password), isFalse);
+    }
+  });
+
+  test('never returns an empty password', () {
+    final password = PasswordGenerator.generate(
+      length: 12,
+      useSymbols: false,
+      useUppercase: false,
+      useLowercase: false,
+      useDigits: false,
+    );
+    expect(password.length, 12);
+  });
+
+  test('a fixed seed gives a repeatable result (used only in tests)', () {
+    final a = PasswordGenerator.generate(random: Random(7));
+    final b = PasswordGenerator.generate(random: Random(7));
+    expect(a, b);
   });
 }
