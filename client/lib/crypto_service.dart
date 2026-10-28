@@ -80,4 +80,68 @@ class CryptoService {
     );
     return Uint8List.fromList(clear);
   }
+
+  // ---------------------------------------------------------------
+  // New in Phase 2: raw bytes for photo files
+  // ---------------------------------------------------------------
+
+  /// Same cipher as [encrypt], but the result is raw bytes:
+  /// nonce (12) + ciphertext + tag (16). No base64, so files stay small.
+  Future<Uint8List> encryptToBytes(
+    List<int> plainText,
+    Uint8List key, {
+    List<int> aad = const [],
+  }) async {
+    final box = await _aes.encrypt(
+      plainText,
+      secretKey: SecretKey(key),
+      aad: aad,
+    );
+    final out = BytesBuilder(copy: false)
+      ..add(box.nonce)
+      ..add(box.cipherText)
+      ..add(box.mac.bytes);
+    return out.takeBytes();
+  }
+
+  /// Reverses [encryptToBytes]. Throws if the key or [aad] is wrong, or if
+  /// even one byte of the file was changed.
+  Future<Uint8List> decryptFromBytes(
+    Uint8List packed,
+    Uint8List key, {
+    List<int> aad = const [],
+  }) async {
+    if (packed.length < _nonceLength + _macLength) {
+      throw const FormatException('Encrypted data is too short');
+    }
+    final box = SecretBox(
+      Uint8List.sublistView(packed, _nonceLength, packed.length - _macLength),
+      nonce: Uint8List.sublistView(packed, 0, _nonceLength),
+      mac: Mac(Uint8List.sublistView(packed, packed.length - _macLength)),
+    );
+    final clear = await _aes.decrypt(
+      box,
+      secretKey: SecretKey(key),
+      aad: aad,
+    );
+    return Uint8List.fromList(clear);
+  }
+
+  /// [encryptToBytes] in a background isolate. Use this for whole photos.
+  Future<Uint8List> encryptToBytesInBackground(
+    List<int> plainText,
+    Uint8List key, {
+    List<int> aad = const [],
+  }) {
+    return Isolate.run(() => encryptToBytes(plainText, key, aad: aad));
+  }
+
+  /// [decryptFromBytes] in a background isolate. Use this for whole photos.
+  Future<Uint8List> decryptFromBytesInBackground(
+    Uint8List packed,
+    Uint8List key, {
+    List<int> aad = const [],
+  }) {
+    return Isolate.run(() => decryptFromBytes(packed, key, aad: aad));
+  }
 }
