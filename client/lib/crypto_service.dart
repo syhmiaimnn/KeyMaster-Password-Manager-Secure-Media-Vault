@@ -82,7 +82,7 @@ class CryptoService {
   }
 
   // ---------------------------------------------------------------
-  // New in Phase 2: raw bytes for photo files
+  // Phase 2: raw bytes for photo files
   // ---------------------------------------------------------------
 
   /// Same cipher as [encrypt], but the result is raw bytes:
@@ -143,5 +143,31 @@ class CryptoService {
     List<int> aad = const [],
   }) {
     return Isolate.run(() => decryptFromBytes(packed, key, aad: aad));
+  }
+
+  // ---------------------------------------------------------------
+  // New in Phase 4
+  // ---------------------------------------------------------------
+
+  /// SHA-256 of [data]. The recovery phrase uses it for its checksum, which
+  /// catches a mistyped word before any key is derived.
+  Future<Uint8List> sha256(List<int> data) async {
+    final hash = await Sha256().hash(data);
+    return Uint8List.fromList(hash.bytes);
+  }
+
+  /// Times [runs] Argon2id key derivations with the real settings and returns
+  /// the milliseconds each one took. This is the main cost of unlocking, so it
+  /// is the number to report for the "unlock speed" requirement (NFR4).
+  Future<List<int>> benchmarkKeyDerivation(int runs) async {
+    final salt = randomBytes(16);
+    final results = <int>[];
+    for (var i = 0; i < runs; i++) {
+      final watch = Stopwatch()..start();
+      await deriveUnlockKey('benchmark-pin', salt);
+      watch.stop();
+      results.add(watch.elapsedMilliseconds);
+    }
+    return results;
   }
 }

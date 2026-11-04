@@ -1,10 +1,14 @@
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 
 import 'about_screen.dart';
 import 'app_lock.dart';
 import 'app_settings.dart';
 import 'change_pin_screen.dart';
+import 'confirm_pin_sheet.dart';
+import 'keystore_biometric.dart';
 import 'onboarding_screen.dart';
+import 'recovery_phrase_screen.dart';
 import 'security_service.dart';
 import 'ui/format.dart';
 import 'ui/theme.dart';
@@ -22,19 +26,47 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final AppSettings _settings = AppSettings.instance;
-  bool _biometricSupported = false;
+  BiometricStatus _biometricStatus = BiometricStatus.unavailable;
+  bool _hasPhrase = false;
   bool _busy = false;
 
   @override
   void initState() {
     super.initState();
-    _checkBiometric();
+    _loadStatus();
   }
 
-  Future<void> _checkBiometric() async {
-    final supported = await SecurityService().isBiometricSupported();
+  /// Reads what the security service knows: can this phone guard a key with
+  /// the fingerprint sensor, and does the vault have a recovery phrase?
+  Future<void> _loadStatus() async {
+    final security = SecurityService();
+    final status = await security.biometricStatus();
+    final hasPhrase = await security.hasRecoveryPhrase();
     if (!mounted) return;
-    setState(() => _biometricSupported = supported);
+    setState(() {
+      _biometricStatus = status;
+      _hasPhrase = hasPhrase;
+    });
+  }
+
+  bool get _canToggleBiometric {
+    if (_busy) return false;
+    // Turning it off is always allowed. Turning it on needs a strong sensor.
+    return _biometricStatus == BiometricStatus.ready || _settings.biometricOn;
+  }
+
+  String get _biometricSubtitle {
+    switch (_biometricStatus) {
+      case BiometricStatus.ready:
+        return "Fingerprint opens the vault. The key stays in the phone's "
+            'Keystore.';
+      case BiometricStatus.notEnrolled:
+        return 'Save a fingerprint in your phone settings first';
+      case BiometricStatus.weakOnly:
+        return "This phone's sensor is rated too weak to guard a key";
+      case BiometricStatus.unavailable:
+        return 'Not available on this phone';
+    }
   }
 
   // ---------------------------------------------------------------
@@ -58,7 +90,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (on && !ok) {
       showToast(
         context,
-        'Biometric unlock was not turned on.',
+        'Fingerprint unlock was not turned on.',
         kind: ToastKind.warning,
       );
       return;
@@ -66,8 +98,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _settings.setBiometricOn(on);
     showToast(
       context,
-      on ? 'Biometric unlock is on.' : 'Biometric unlock is off.',
+      on ? 'Fingerprint unlock is on.' : 'Fingerprint unlock is off.',
       kind: ToastKind.success,
+    );
+  }
+
+  /// Create or replace the recovery phrase. The PIN is asked first, because
+  /// the vault is already open and a recovery phrase is a second way in.
+  Future<void> _openRecovery() async {
+    final replacing = _hasPhrase;
+    final ok = await confirmPin(
+      context,
+      title: replacing ? 'Replace your recovery phrase' : 'Create a recovery phrase',
+      message: 'Enter your Master PIN to continue.',
+    );
+    if (!ok || !mounted) return;
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => RecoveryPhraseScreen(replacing: replacing),
+      ),
+    );
+    if (!mounted) return;
+    await _loadStatus();
+  }
+
+  void _openSpeedTest() {
+    showAppSheet<void>(
+      context,
+      builder: (sheetContext) => const _SpeedTestSheet(),
     );
   }
 
@@ -109,8 +168,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final first = await confirmAction(
       context,
       title: 'Erase all data?',
-      message: 'Every password, note and photo and your Master PIN will be '
-          'deleted from this phone. This cannot be undone.',
+      message: 'Every password, note and photo, your Master PIN and your '
+          'recovery phrase will be deleted from this phone. This cannot be '
+          'undone.',
       confirmLabel: 'Continue',
       destructive: true,
       icon: Icons.warning_amber_rounded,
@@ -237,17 +297,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
             SettingTile(
               icon: Icons.fingerprint_rounded,
               color: p.accent,
-              title: 'Biometric unlock',
-              subtitle: _biometricSupported
-                  ? 'Fingerprint or face instead of the PIN'
-                  : 'Not available on this phone',
-              onTap: _biometricSupported
+              title: 'Fingerprint unlock',
+              subtitle: _biometricSubtitle,
+              onTap: _canToggleBiometric
                   ? () => _toggleBiometric(!_settings.biometricOn)
                   : null,
               trailing: Switch(
                 value: _settings.biometricOn,
-                onChanged: (_biometricSupported && !_busy) ? _toggleBiometric : null,
+                onChanged: _canToggleBiometric ? _toggleBiometric : null,
               ),
+            ),
+            SettingTile(
+              icon: Icons.key_rounded,
+              color: _hasPhrase ? p.success : p.warning,
+              title: 'Recovery phrase',
+              subtitle: _hasPhrase
+                  ? 'Set. Opens the vault if you forget the PIN.'
+                  : 'Not set up. A forgotten PIN means lost data.',
+              onTap: _busy ? null : _openRecovery,
             ),
             SettingTile(
               icon: Icons.timer_rounded,
@@ -305,6 +372,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               subtitle: 'Deletes everything on this phone',
               danger: true,
               onTap: _busy ? null : _erase,
+            ),
+          ],
+        ),
+        const SectionLabel('Diagnostics'),
+        SettingGroup(
+          children: [
+            SettingTile(
+              icon: Icons.speed_rounded,
+              color: p.accent,
+              title: 'Test unlock speed',
+              subtitle: 'Times the real PIN key derivation on this phone',
+              onTap: _openSpeedTest,
             ),
           ],
         ),
@@ -390,6 +469,195 @@ class _TypeToConfirmState extends State<_TypeToConfirm> {
             danger: true,
             onPressed: matches ? () => Navigator.pop(context, true) : null,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Runs the real Argon2id key derivation a few times and shows how long the
+/// unlock step takes on this phone. This is the evidence for the report's
+/// unlock-speed requirement (NFR4).
+class _SpeedTestSheet extends StatefulWidget {
+  const _SpeedTestSheet();
+
+  @override
+  State<_SpeedTestSheet> createState() => _SpeedTestSheetState();
+}
+
+class _SpeedTestSheetState extends State<_SpeedTestSheet> {
+  static const int _runs = 5;
+
+  /// The target from the report (NFR4). Change it if your report says other.
+  static const int _targetMs = 2000;
+
+  String get _targetText => '${(_targetMs / 1000).toStringAsFixed(1)} s';
+
+  List<int>? _times;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _measure();
+  }
+
+  Future<void> _measure() async {
+    try {
+      final times = await SecurityService().measureUnlockSpeed(_runs);
+      if (!mounted) return;
+      setState(() => _times = times);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _failed = true);
+    }
+  }
+
+  void _again() {
+    setState(() {
+      _times = null;
+      _failed = false;
+    });
+    _measure();
+  }
+
+  Widget _stat(Palette p, String label, int ms, {bool big = false}) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(
+            '$ms',
+            style: TextStyle(
+              fontSize: big ? 30 : 22,
+              fontWeight: FontWeight.w800,
+              color: p.text,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '$label (ms)',
+            style: AppText.caption.copyWith(color: p.muted),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _results(Palette p, List<int> times) {
+    final sorted = [...times]..sort();
+    var total = 0;
+    for (final ms in times) {
+      total += ms;
+    }
+    final average = (total / times.length).round();
+    final ok = average <= _targetMs;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            _stat(p, 'Fastest', sorted.first),
+            _stat(p, 'Average', average, big: true),
+            _stat(p, 'Slowest', sorted.last),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Text(
+          'Runs: ${times.join(', ')} ms',
+          textAlign: TextAlign.center,
+          style: AppText.caption.copyWith(color: p.muted),
+        ),
+        const SizedBox(height: 16),
+        InfoBanner(
+          icon: ok ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
+          color: ok ? p.success : p.warning,
+          text: ok
+              ? 'The average is within the $_targetText target.'
+              : 'The average is over the $_targetText target.',
+        ),
+        if (!kReleaseMode) ...[
+          const SizedBox(height: 10),
+          InfoBanner(
+            icon: Icons.bug_report_rounded,
+            color: p.violet,
+            text: 'This is a debug build, which is several times slower than '
+                'the real app. Run the app with flutter run --release and '
+                'test again before you copy these numbers.',
+          ),
+        ],
+        const SizedBox(height: 10),
+        Text(
+          'Unlocking takes about this long, plus a few milliseconds for '
+          'decryption. Write your phone model next to the numbers.',
+          textAlign: TextAlign.center,
+          style: AppText.caption.copyWith(color: p.muted),
+        ),
+        const SizedBox(height: 16),
+        Center(
+          child: SoftButton(
+            label: 'Run again',
+            icon: Icons.refresh_rounded,
+            onPressed: _again,
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = Palette.of(context);
+    final times = _times;
+
+    Widget body;
+    if (_failed) {
+      body = Column(
+        children: [
+          Text(
+            'The test could not run.',
+            style: AppText.body.copyWith(color: p.danger),
+          ),
+          const SizedBox(height: 14),
+          SoftButton(
+            label: 'Try again',
+            icon: Icons.refresh_rounded,
+            onPressed: _again,
+          ),
+        ],
+      );
+    } else if (times == null) {
+      body = Column(
+        children: [
+          const SizedBox(height: 10),
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          Text(
+            'Timing $_runs unlocks...',
+            style: AppText.body.copyWith(color: p.muted),
+          ),
+          const SizedBox(height: 10),
+        ],
+      );
+    } else {
+      body = _results(p, times);
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(22, 0, 22, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('Unlock speed', style: AppText.title),
+          const SizedBox(height: 6),
+          Text(
+            'How long the PIN takes to turn into the vault key, with the '
+            'real Argon2id settings.',
+            style: AppText.body.copyWith(color: p.muted),
+          ),
+          const SizedBox(height: 20),
+          body,
         ],
       ),
     );

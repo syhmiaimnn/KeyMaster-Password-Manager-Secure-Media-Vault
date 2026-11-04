@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'app_settings.dart';
 import 'home_shell.dart';
+import 'recover_access_screen.dart';
 import 'security_service.dart';
 import 'ui/format.dart';
 import 'ui/pin_entry.dart';
@@ -79,8 +80,40 @@ class _UnlockScreenState extends State<UnlockScreen> {
   }
 
   Future<void> _tryBiometric() async {
-    final ok = await _security.authenticateWithBiometrics();
-    if (ok && mounted) _enter();
+    final result = await _security.authenticateWithBiometrics();
+    if (!mounted) return;
+
+    if (result == BiometricResult.success) {
+      _enter();
+      return;
+    }
+    if (result == BiometricResult.invalidated) {
+      // A new fingerprint was added to the phone. Android destroyed the key,
+      // and the security service already switched fingerprint unlock off.
+      AppSettings.instance.setBiometricOn(false);
+      setState(() => _biometricEnabled = false);
+      showToast(
+        context,
+        'A new fingerprint was added to this phone, so fingerprint unlock '
+        'was switched off. Enter your PIN, then turn it on again in Settings.',
+        kind: ToastKind.warning,
+      );
+      return;
+    }
+    if (result == BiometricResult.failed) {
+      showToast(
+        context,
+        'The fingerprint did not work. Use your PIN instead.',
+        kind: ToastKind.warning,
+      );
+    }
+    // Cancelled: the user chose the PIN keypad, so say nothing.
+  }
+
+  void _forgotPin() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (context) => const RecoverAccessScreen()),
+    );
   }
 
   Future<void> _onPin(String pin) async {
@@ -184,7 +217,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
                   const SizedBox(height: 8),
                   Text(
                     _biometricEnabled
-                        ? 'Use biometrics or enter your Master PIN'
+                        ? 'Use your fingerprint or enter your Master PIN'
                         : 'Enter your Master PIN',
                     style: AppText.body.copyWith(color: p.muted),
                   ),
@@ -218,6 +251,16 @@ class _UnlockScreenState extends State<UnlockScreen> {
                               child: CircularProgressIndicator(strokeWidth: 2.4),
                             )
                           : _status(p),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _working ? null : _forgotPin,
+                    child: Text(
+                      'Forgot PIN?',
+                      style: TextStyle(
+                        color: p.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],

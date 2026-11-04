@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'app_settings.dart';
-import 'home_shell.dart';
 import 'password_tools.dart';
+import 'recovery_phrase_screen.dart';
 import 'security_service.dart';
 import 'ui/pin_entry.dart';
 import 'ui/theme.dart';
@@ -14,6 +14,8 @@ import 'vault_store.dart';
 enum _Stage { create, confirm }
 
 /// First run: the user picks a 6-digit Master PIN on a keypad and repeats it.
+/// Then the app creates the vault, offers fingerprint unlock and moves on to
+/// the recovery phrase.
 class PinSetupScreen extends StatefulWidget {
   const PinSetupScreen({super.key});
 
@@ -85,11 +87,17 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
     });
     try {
       // Creates the vault key, wraps it with the PIN and leaves it unlocked.
-      await SecurityService().setupVault(
-        pin,
-        enableBiometrics: _useBiometric && _biometricSupported,
-      );
+      final security = SecurityService();
+      await security.setupVault(pin);
       await VaultStore.instance.load(force: true);
+
+      // Fingerprint unlock is optional and needs one scan. If the user
+      // cancels it, the vault is still created and it can be switched on
+      // later in Settings.
+      if (_useBiometric && _biometricSupported) {
+        final enabled = await security.enableBiometrics();
+        AppSettings.instance.setBiometricOn(enabled);
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -108,10 +116,11 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
       _done = true;
     });
 
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    await Future<void>.delayed(const Duration(milliseconds: 1400));
     if (!mounted) return;
+    // Next comes the recovery phrase, so a forgotten PIN is not the end.
     Navigator.of(context).pushAndRemoveUntil(
-      fadeRoute<void>(const HomeShell()),
+      fadeRoute<void>(const RecoveryPhraseScreen(firstRun: true)),
       (route) => false,
     );
   }
@@ -139,7 +148,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              confirm ? 'STEP 2 OF 2' : 'STEP 1 OF 2',
+              confirm ? 'SET PIN · 2 OF 2' : 'SET PIN · 1 OF 2',
               style: AppText.overline.copyWith(color: p.primary),
             ),
           ),
@@ -153,8 +162,8 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
           Text(
             confirm
                 ? 'Enter the same six digits once more.'
-                : 'Six digits that open everything. It cannot be recovered '
-                    'if you forget it, so choose one you will remember.',
+                : 'Six digits that open everything. Next you will get a '
+                    '12-word recovery phrase, in case you ever forget it.',
             textAlign: TextAlign.center,
             style: AppText.body.copyWith(color: p.muted),
           ),
@@ -196,6 +205,11 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
             const SizedBox(height: 10),
             Text(
               'Encrypted and stored only on this phone.',
+              style: AppText.body.copyWith(color: p.muted),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'One more step: your recovery phrase.',
               style: AppText.body.copyWith(color: p.muted),
             ),
           ],
@@ -284,7 +298,7 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
                               const SizedBox(width: 14),
                               const Expanded(
                                 child: Text(
-                                  'Unlock with biometrics',
+                                  'Unlock with fingerprint',
                                   style: AppText.subtitle,
                                 ),
                               ),

@@ -2,12 +2,35 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:local_auth/local_auth.dart';
 
 import 'crypto_service.dart';
+import 'keystore_biometric.dart';
+import 'recovery_phrase.dart';
 import 'vault_item.dart';
 
 enum UnlockStatus { success, wrongPin, lockedOut }
+
+/// The outcome of asking for a fingerprint at the unlock screen.
+enum BiometricResult {
+  success,
+  cancelled,
+
+  /// A new fingerprint was added to the phone, so the old key is gone and
+  /// biometric unlock was switched off. The PIN still works.
+  invalidated,
+  failed,
+}
+
+/// The outcome of checking a recovery phrase against the vault.
+enum RecoveryOutcome {
+  success,
+
+  /// The words are a valid phrase, but not the one for this vault.
+  wrongPhrase,
+
+  /// This vault never got a recovery phrase.
+  notSet,
+}
 
 class UnlockResult {
   final UnlockStatus status;
@@ -29,23 +52,28 @@ class SecurityService {
   SecurityService._internal();
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
-  final LocalAuthentication _localAuth = LocalAuthentication();
   final CryptoService _crypto = CryptoService();
+  late final RecoveryPhrase _phrase = RecoveryPhrase(_crypto);
 
   // Names of the values saved in secure storage
   static const String _saltKey = 'vault_salt';
   static const String _wrappedVaultKey = 'vault_wrapped_key';
   static const String _itemsKey = 'vault_items_encrypted';
-  static const String _biometricCopyKey = 'vault_biometric_copy';
+  static const String _biometricBlobKey = 'vault_biometric_blob';
+  static const String _recoveryWrapKey = 'vault_recovery_wrap';
   static const String _failedAttemptsKey = 'failed_attempts';
   static const String _lockUntilKey = 'lock_until_ms';
-  // Plain-text names used by the first version of the app
+  // Names used by earlier versions of the app
   static const String _legacyPinKey = 'master_pin';
   static const String _legacyItemsKey = 'vault_items_data';
+  // Phases 0 to 3 saved a plain copy of the vault key here for fingerprint
+  // unlock. It is deleted as soon as the PIN is entered after the update.
+  static const String _legacyBiometricCopyKey = 'vault_biometric_copy';
 
   // AAD ties each ciphertext to its purpose (see crypto_service.dart)
   static final List<int> _wrapAad = utf8.encode('keymaster:v1:wrapped-vault-key');
   static final List<int> _itemsAad = utf8.encode('keymaster:v1:vault-items');
+  static final List<int> _recoveryAad = utf8.encode('keymaster:v1:recovery-wrap');
 
   // Wrong PINs allowed before the first lockout
   static const int _freeAttempts = 5;
@@ -93,7 +121,9 @@ class SecurityService {
   }
 
   /// First run: create the vault key, wrap it with the PIN, leave it unlocked.
-  Future<void> setupVault(String pin, {bool enableBiometrics = false}) async {
+  /// Biometric unlock and the recovery phrase are switched on afterwards, with
+  /// [enableBiometrics] and [storeRecoveryWords], because both need the user.
+  Future<void> setupVault(String pin) async {
     final salt = _crypto.randomBytes(16);
     final vaultKey = _crypto.randomBytes(32);
     final unlockKey = await _crypto.deriveUnlockKey(pin, salt);
@@ -106,17 +136,14 @@ class SecurityService {
     await _storage.delete(key: _legacyPinKey);
     await _storage.delete(key: _legacyItemsKey);
 
+    // A brand new vault has no fingerprint key and no recovery phrase yet.
+    await _storage.delete(key: _biometricBlobKey);
+    await _storage.delete(key: _legacyBiometricCopyKey);
+    await _storage.delete(key: _recoveryWrapKey);
+    await KeystoreBiometric.deleteKey();
+
     await _storage.write(key: _saltKey, value: base64Encode(salt));
     await _storage.write(key: _itemsKey, value: emptyItems);
-    if (enableBiometrics) {
-      // Interim design, replaced in Phase 1 (see the notes below this code)
-      await _storage.write(
-        key: _biometricCopyKey,
-        value: base64Encode(vaultKey),
-      );
-    } else {
-      await _storage.delete(key: _biometricCopyKey);
-    }
     await _resetAttempts();
     // Written last, so hasPin() is only true when everything else is saved.
     await _storage.write(key: _wrappedVaultKey, value: wrappedKey);
@@ -175,7 +202,13 @@ class SecurityService {
   Future<UnlockResult> unlockWithPin(String pin) async {
     final check = await _checkPin(pin);
     final key = check.key;
-    if (key != null) _vaultKey = key;
+    if (key != null) {
+      _vaultKey = key;
+      // Remove the unprotected key copy that older versions kept for the
+      // fingerprint. Fingerprint unlock is then switched on again in Settings,
+      // this time with a key that stays in the Android Keystore.
+      await _storage.delete(key: _legacyBiometricCopyKey);
+    }
     return check.result;
   }
 
@@ -231,54 +264,139 @@ class SecurityService {
     final vaultKey = check.key;
     if (vaultKey == null) return check.result;
 
-    final salt = _crypto.randomBytes(16);
-    final unlockKey = await _crypto.deriveUnlockKey(newPin, salt);
-    final wrapped = await _crypto.encrypt(vaultKey, unlockKey, aad: _wrapAad);
-
-    // One single write (see the notes near the top of this file).
-    await _storage.write(
-      key: _wrappedVaultKey,
-      value: _encodeWrap(salt, wrapped),
-    );
-    await _storage.delete(key: _saltKey); // the old salt is not used any more
+    await _writePinWrap(vaultKey, newPin);
 
     _vaultKey = vaultKey;
     return check.result;
   }
 
-  // ---------------------------------------------------------------
-  // Biometrics
-  // ---------------------------------------------------------------
-
-  Future<bool> isBiometricEnabled() async {
-    return await _storage.read(key: _biometricCopyKey) != null;
+  /// Wraps [vaultKey] with a key made from [pin] and saves it in one write
+  /// (see the notes near the top of this file).
+  Future<void> _writePinWrap(Uint8List vaultKey, String pin) async {
+    final salt = _crypto.randomBytes(16);
+    final unlockKey = await _crypto.deriveUnlockKey(pin, salt);
+    final wrapped = await _crypto.encrypt(vaultKey, unlockKey, aad: _wrapAad);
+    await _storage.write(
+      key: _wrappedVaultKey,
+      value: _encodeWrap(salt, wrapped),
+    );
+    await _storage.delete(key: _saltKey); // the old salt is not used any more
   }
 
-  /// True when the phone has a fingerprint or face sensor that is set up.
-  Future<bool> isBiometricSupported() async {
+  // ---------------------------------------------------------------
+  // Recovery phrase
+  // ---------------------------------------------------------------
+  //
+  // The vault key is wrapped a second time, with a key made from 12 random
+  // words. The PIN and the phrase are two independent doors to the same vault
+  // key. Neither is stored. Only the two wrapped copies are.
+
+  /// True when this vault has a recovery phrase.
+  Future<bool> hasRecoveryPhrase() async {
+    return await _storage.read(key: _recoveryWrapKey) != null;
+  }
+
+  /// Reads typed text and says whether it is a well-formed phrase. This does
+  /// not look at the vault.
+  Future<PhraseCheck> checkRecoveryText(String text) => _phrase.check(text);
+
+  /// Makes 12 new words. Nothing is saved until [storeRecoveryWords], so the
+  /// old phrase keeps working until the user has confirmed the new one.
+  Future<List<String>> generateRecoveryWords() async {
+    final entropy = _crypto.randomBytes(RecoveryPhrase.entropyBytes);
     try {
-      return await _localAuth.isDeviceSupported() &&
-          await _localAuth.canCheckBiometrics;
-    } catch (_) {
-      return false;
+      return await _phrase.wordsFromEntropy(entropy);
+    } finally {
+      entropy.fillRange(0, entropy.length, 0);
     }
   }
 
-  /// Turn biometric unlock on. The user must prove themselves once first.
-  /// The vault must be unlocked, because the key copy comes from memory.
+  static String _phraseSecret(List<String> words) {
+    return words.map((word) => word.trim().toLowerCase()).join(' ');
+  }
+
+  /// Saves the vault key wrapped with [words]. The vault must be unlocked.
+  /// Any earlier phrase stops working.
+  Future<void> storeRecoveryWords(List<String> words) async {
+    final vaultKey = _requireKey();
+    final salt = _crypto.randomBytes(16);
+    final recoveryKey = await _crypto.deriveUnlockKey(_phraseSecret(words), salt);
+    final wrapped =
+        await _crypto.encrypt(vaultKey, recoveryKey, aad: _recoveryAad);
+    await _storage.write(
+      key: _recoveryWrapKey,
+      value: 'r1.${base64Encode(salt)}.$wrapped',
+    );
+  }
+
+  /// "Forgot PIN", step 1. If [words] are the right phrase, the vault key is
+  /// kept in memory, so the next step can wrap it with a new PIN. Nothing is
+  /// saved yet, so quitting now changes nothing.
+  Future<RecoveryOutcome> recoverWithPhrase(List<String> words) async {
+    final stored = await _storage.read(key: _recoveryWrapKey);
+    if (stored == null) return RecoveryOutcome.notSet;
+    final parts = stored.split('.');
+    if (parts.length != 3 || parts[0] != 'r1') return RecoveryOutcome.notSet;
+
+    final Uint8List salt;
+    try {
+      salt = base64Decode(parts[1]);
+    } catch (_) {
+      return RecoveryOutcome.notSet;
+    }
+
+    final recoveryKey = await _crypto.deriveUnlockKey(_phraseSecret(words), salt);
+    try {
+      // A wrong phrase gives a wrong key, so this throws.
+      final key =
+          await _crypto.decrypt(parts[2], recoveryKey, aad: _recoveryAad);
+      lock(); // forget any key still in memory
+      _vaultKey = key;
+      return RecoveryOutcome.success;
+    } catch (_) {
+      return RecoveryOutcome.wrongPhrase;
+    }
+  }
+
+  /// "Forgot PIN", step 2. Wraps the recovered vault key with [newPin] and
+  /// clears the wrong-PIN counter. Call it only after [recoverWithPhrase]
+  /// succeeded. The vault stays unlocked.
+  Future<void> finishRecovery(String newPin) async {
+    final vaultKey = _requireKey();
+    await _writePinWrap(vaultKey, newPin);
+    await _resetAttempts();
+  }
+
+  // ---------------------------------------------------------------
+  // Biometrics (key kept in the Android Keystore)
+  // ---------------------------------------------------------------
+  //
+  // Enabling: the vault key is encrypted with a Keystore key that needs a
+  // fingerprint scan for every use. Only the encrypted result is saved.
+  // Unlocking: a scan lets the Keystore decrypt it again. A new fingerprint
+  // added to the phone destroys the Keystore key, which switches this off.
+
+  Future<bool> isBiometricEnabled() async {
+    return await _storage.read(key: _biometricBlobKey) != null;
+  }
+
+  /// Why biometric unlock is, or is not, possible on this phone.
+  Future<BiometricStatus> biometricStatus() => KeystoreBiometric.status();
+
+  /// True when the phone has a strong fingerprint sensor that is set up.
+  Future<bool> isBiometricSupported() async {
+    return await KeystoreBiometric.status() == BiometricStatus.ready;
+  }
+
+  /// Turn biometric unlock on. The user must scan a finger once. The vault
+  /// must be unlocked, because the key to protect comes from memory.
   Future<bool> enableBiometrics() async {
     final key = _vaultKey;
     if (key == null) return false;
     try {
-      if (!await isBiometricSupported()) return false;
-      final ok = await _localAuth.authenticate(
-        localizedReason: 'Confirm to turn on biometric unlock',
-        biometricOnly: true,
-        persistAcrossBackgrounding: true,
-      );
-      if (!ok) return false;
-      // Interim design, replaced in Phase 1 (see the notes below this code)
-      await _storage.write(key: _biometricCopyKey, value: base64Encode(key));
+      final blob = await KeystoreBiometric.enroll(key);
+      await _storage.write(key: _biometricBlobKey, value: blob);
+      await _storage.delete(key: _legacyBiometricCopyKey);
       return true;
     } catch (_) {
       return false;
@@ -286,27 +404,28 @@ class SecurityService {
   }
 
   Future<void> disableBiometrics() async {
-    await _storage.delete(key: _biometricCopyKey);
+    await _storage.delete(key: _biometricBlobKey);
+    await _storage.delete(key: _legacyBiometricCopyKey);
+    await KeystoreBiometric.deleteKey();
   }
 
-  Future<bool> authenticateWithBiometrics() async {
+  Future<BiometricResult> authenticateWithBiometrics() async {
+    final blob = await _storage.read(key: _biometricBlobKey);
+    if (blob == null) return BiometricResult.failed;
     try {
-      if (!await isBiometricEnabled()) return false;
-      if (!await _localAuth.canCheckBiometrics) return false;
-
-      final ok = await _localAuth.authenticate(
-        localizedReason: 'Authenticate to unlock KeyMaster',
-        biometricOnly: true,
-        persistAcrossBackgrounding: true,
-      );
-      if (!ok) return false;
-
-      final copy = await _storage.read(key: _biometricCopyKey);
-      if (copy == null) return false;
-      _vaultKey = base64Decode(copy);
-      return true;
+      _vaultKey = await KeystoreBiometric.unlock(blob);
+      return BiometricResult.success;
+    } on BiometricException catch (e) {
+      if (e.failure == BiometricFailure.invalidated) {
+        await disableBiometrics();
+        return BiometricResult.invalidated;
+      }
+      if (e.failure == BiometricFailure.cancelled) {
+        return BiometricResult.cancelled;
+      }
+      return BiometricResult.failed;
     } catch (_) {
-      return false;
+      return BiometricResult.failed;
     }
   }
 
@@ -343,15 +462,27 @@ class SecurityService {
   }
 
   // ---------------------------------------------------------------
+  // Unlock speed (for the report)
+  // ---------------------------------------------------------------
+
+  /// Milliseconds taken by each of [runs] Argon2id key derivations on this
+  /// phone. Unlocking takes about this long plus a few milliseconds.
+  Future<List<int>> measureUnlockSpeed([int runs = 5]) {
+    return _crypto.benchmarkKeyDerivation(runs);
+  }
+
+  // ---------------------------------------------------------------
   // Erase everything
   // ---------------------------------------------------------------
 
-  /// Deletes every value KeyMaster saved in secure storage: the wrapped key,
-  /// the encrypted items, the biometric copy, the counters and the settings.
+  /// Deletes every value KeyMaster saved in secure storage: the wrapped keys,
+  /// the encrypted items, the biometric blob, the counters and the settings,
+  /// and the fingerprint key in the Android Keystore.
   /// The caller deletes the photo files (see wipe_service.dart).
   Future<void> wipeAll() async {
     lock();
     await _storage.deleteAll();
+    await KeystoreBiometric.deleteKey();
   }
 
   // ---------------------------------------------------------------

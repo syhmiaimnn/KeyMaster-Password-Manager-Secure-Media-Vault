@@ -100,6 +100,26 @@ class AboutScreen extends StatelessWidget {
                   divider,
                   _row(
                     p,
+                    Icons.key_rounded,
+                    p.warning,
+                    'Recovery phrase',
+                    'Twelve random words make a second key that opens the same '
+                        'vault key. Write them on paper. If you forget the PIN, '
+                        'the words get you back in.',
+                  ),
+                  divider,
+                  _row(
+                    p,
+                    Icons.fingerprint_rounded,
+                    p.accent,
+                    'Fingerprint tied to the hardware',
+                    'The key behind fingerprint unlock lives in the Android '
+                        'Keystore and cannot be copied out. Adding a new '
+                        'fingerprint to the phone switches it off.',
+                  ),
+                  divider,
+                  _row(
+                    p,
                     Icons.enhanced_encryption_rounded,
                     p.accent,
                     'AES-256-GCM',
@@ -148,10 +168,10 @@ class AboutScreen extends StatelessWidget {
             const SectionLabel('Honest limits'),
             const InfoBanner(
               icon: Icons.info_outline_rounded,
-              text: 'Biometric unlock keeps a copy of the vault key in the '
-                  "phone's secure storage (Android Keystore). A design bound "
-                  'to the fingerprint hardware is planned for a later phase. '
-                  'Also, Dart cannot guarantee that memory is wiped, so keys '
+              text: 'Anyone who finds your recovery phrase can open the vault, '
+                  'so keep the paper safe. Some phones rate their fingerprint '
+                  'sensor too weak to guard a key, and there only the PIN '
+                  'works. Dart cannot guarantee that memory is wiped, so keys '
                   'are cleared on a best-effort basis.',
             ),
             const SizedBox(height: 18),
