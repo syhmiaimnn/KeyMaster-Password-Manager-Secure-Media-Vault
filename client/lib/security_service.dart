@@ -6,7 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'crypto_service.dart';
 import 'keystore_biometric.dart';
 import 'recovery_phrase.dart';
-import 'vault_item.dart';
+import 'vault_data.dart';
 
 enum UnlockStatus { success, wrongPin, lockedOut }
 
@@ -446,19 +446,23 @@ class SecurityService {
     return key;
   }
 
-  Future<void> saveVaultItems(List<VaultItem> items) async {
+  /// Saves the items and the photo folders together, as one encrypted value
+  /// (see vault_data.dart for why they are never saved separately).
+  Future<void> saveVaultData(VaultData data) async {
     final key = _requireKey();
-    final plain = utf8.encode(VaultItem.serializeList(items));
+    final plain = utf8.encode(data.serialize());
     final packed = await _crypto.encrypt(plain, key, aad: _itemsAad);
     await _storage.write(key: _itemsKey, value: packed);
   }
 
-  Future<List<VaultItem>> loadVaultItems() async {
+  /// Reads and decrypts the items and folders. A vault saved before Phase 6
+  /// has items only, and opens with no folders.
+  Future<VaultData> loadVaultData() async {
     final key = _requireKey();
     final packed = await _storage.read(key: _itemsKey);
-    if (packed == null || packed.isEmpty) return [];
+    if (packed == null || packed.isEmpty) return VaultData.empty;
     final plain = await _crypto.decrypt(packed, key, aad: _itemsAad);
-    return VaultItem.deserializeList(utf8.decode(plain));
+    return VaultData.deserialize(utf8.decode(plain));
   }
 
   // ---------------------------------------------------------------

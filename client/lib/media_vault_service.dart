@@ -8,9 +8,12 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'crypto_service.dart';
+import 'key_tree.dart';
 import 'metadata_analysis.dart';
 import 'metadata_scanner.dart';
+import 'photo_folder.dart';
 import 'vault_item.dart';
+import 'vault_store.dart';
 
 /// A problem we can explain to the user in one sentence.
 class MediaVaultException implements Exception {
@@ -52,7 +55,15 @@ class _Cleaned {
 }
 
 class MediaVaultService {
+  /// [importFolderId] is the folder that new photos are saved in. Reading,
+  /// sharing, moving and deleting photos work in every folder, so leave it out
+  /// for those. When it is left out, new photos go in the first folder.
+  MediaVaultService({this.importFolderId});
+
+  final String? importFolderId;
+
   final CryptoService _crypto = CryptoService();
+  final KeyTree _tree = KeyTree();
 
   // Photos are scaled down to roughly this many pixels (never enlarged).
   static const int _photoSize = 2048;
@@ -136,6 +147,10 @@ class MediaVaultService {
     Uint8List original, {
     MetadataAnalysis? before,
   }) async {
+    // 0. Which folder? Its key will lock this photo's key. Check this first,
+    //    so no time is spent on a photo that has nowhere to go.
+    final folder = _importFolder();
+
     // 1. What hidden data does the original carry?
     final report = before ?? await analyze(original);
 
@@ -154,9 +169,11 @@ class MediaVaultService {
       );
     }
 
-    // 4. A new random key and name for this photo only.
+    // 4. A new random key and name for this photo only. The key is locked
+    //    with the folder key before it is saved in the record.
     final id = _newId();
     final fileKey = _crypto.randomBytes(32);
+    final lockedKey = await _tree.wrapFileKey(fileKey, folder, id);
     final encPhoto = await _crypto.encryptToBytesInBackground(
       clean,
       fileKey,
@@ -187,7 +204,8 @@ class MediaVaultService {
       mediaPath: '$id.enc',
       mimeType: 'image/jpeg',
       sizeBytes: clean.length,
-      fileKey: base64Encode(fileKey),
+      fileKey: lockedKey,
+      folderId: folder.id,
       sanitizedTags: report.storedNames(),
     );
     return ImportedPhoto(item, report, cleaned.after);
@@ -271,26 +289,54 @@ class MediaVaultService {
   // Read
   // ---------------------------------------------------------------
 
-  Uint8List _keyOf(VaultItem item) => base64Decode(item.fileKey);
+  /// The folder that new photos go into.
+  PhotoFolder _importFolder() {
+    final store = VaultStore.instance;
+    final wanted = importFolderId;
+    if (wanted != null) {
+      final folder = store.folderById(wanted);
+      if (folder == null) {
+        throw const MediaVaultException(
+          'This folder no longer exists, so the photo was not saved.',
+        );
+      }
+      return folder;
+    }
+    final folder = store.defaultFolder;
+    if (folder == null) {
+      throw const MediaVaultException(
+        'There is no folder to save this photo in. Create a folder first.',
+      );
+    }
+    return folder;
+  }
+
+  /// The photo's own key, unlocked with the key of its folder.
+  Future<Uint8List> _keyOf(VaultItem item) {
+    final folder = VaultStore.instance.folderById(item.folderId);
+    return _tree.unwrapFileKey(item, folder);
+  }
 
   /// The full photo, decrypted in memory only. Nothing is written to disk.
   Future<Uint8List> readPhoto(VaultItem item) async {
+    final key = await _keyOf(item);
     final file = await _file(item.mediaPath);
     final packed = await file.readAsBytes();
     return _crypto.decryptFromBytesInBackground(
       packed,
-      _keyOf(item),
+      key,
       aad: _aad(item.id, 'full'),
     );
   }
 
   /// The small preview. It is tiny, so it is decrypted on the main isolate.
   Future<Uint8List> readThumbnail(VaultItem item) async {
+    final key = await _keyOf(item);
     final file = await _file(_thumbName(item.id));
     final packed = await file.readAsBytes();
     return _crypto.decryptFromBytes(
       packed,
-      _keyOf(item),
+      key,
       aad: _aad(item.id, 'thumb'),
     );
   }
