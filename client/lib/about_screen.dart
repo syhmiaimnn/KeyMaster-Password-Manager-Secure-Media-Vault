@@ -140,6 +140,17 @@ class AboutScreen extends StatelessWidget {
                   divider,
                   _row(
                     p,
+                    Icons.account_tree_rounded,
+                    p.violet,
+                    'Folders with their own keys',
+                    'Photos live in folders. Every folder has its own key, '
+                        'and the keys of its photos are locked with it. '
+                        'Deleting a folder deletes its key, so its photos can '
+                        'never be opened again.',
+                  ),
+                  divider,
+                  _row(
+                    p,
                     Icons.share_rounded,
                     p.accent,
                     'Clean copies for sharing',

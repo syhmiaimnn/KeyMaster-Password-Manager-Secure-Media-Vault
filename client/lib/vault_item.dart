@@ -12,7 +12,15 @@ class VaultItem {
   final String mediaPath; // file name of the encrypted photo in the app's private folder
   final String mimeType; // 'image/jpeg' for photos, empty for passwords and notes
   final int sizeBytes; // size of the stored photo, 0 for passwords and notes
-  final String fileKey; // this photo's own random 32-byte key, as base64
+  /// This photo's own random 32-byte key. Since Phase 6 it is saved locked
+  /// with the key of the photo's folder ("k2." followed by base64). Photos
+  /// saved earlier keep the plain base64 key until the vault is first opened
+  /// after the update, when it is moved into the first folder.
+  final String fileKey;
+
+  /// The id of the folder this photo is in. Empty for other items, and for
+  /// photos saved before Phase 6 until they are moved into the first folder.
+  final String folderId;
 
   /// Names of the hidden fields that were removed from this photo (for example
   /// "GPS GPSLatitude" or "#XMP"). Names only, never the values. The photo's
@@ -38,6 +46,7 @@ class VaultItem {
     this.mimeType = '',
     this.sizeBytes = 0,
     this.fileKey = '',
+    this.folderId = '',
     this.sanitizedTags = const <String>[],
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -55,6 +64,8 @@ class VaultItem {
     String? note,
     String? website,
     bool? favorite,
+    String? fileKey,
+    String? folderId,
     DateTime? updatedAt,
   }) {
     return VaultItem(
@@ -69,7 +80,8 @@ class VaultItem {
       mediaPath: mediaPath,
       mimeType: mimeType,
       sizeBytes: sizeBytes,
-      fileKey: fileKey,
+      fileKey: fileKey ?? this.fileKey,
+      folderId: folderId ?? this.folderId,
       sanitizedTags: sanitizedTags,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -89,6 +101,7 @@ class VaultItem {
         'mimeType': mimeType,
         'sizeBytes': sizeBytes,
         'fileKey': fileKey,
+        'folderId': folderId,
         'sanitizedTags': sanitizedTags,
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
@@ -111,6 +124,8 @@ class VaultItem {
       mimeType: json['mimeType'] as String? ?? '',
       sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
       fileKey: json['fileKey'] as String? ?? '',
+      // Records saved before Phase 6 have no folder.
+      folderId: json['folderId'] as String? ?? '',
       // Records saved before Phase 5 have no list.
       sanitizedTags: tagsJson is List
           ? tagsJson.whereType<String>().toList()
