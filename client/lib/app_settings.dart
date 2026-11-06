@@ -40,6 +40,7 @@ class AppSettings extends ChangeNotifier {
   static const String _kBlockShots = 'pref_block_screenshots';
   static const String _kOnboarded = 'pref_onboarded';
   static const String _kLastUnlock = 'pref_last_unlock_ms';
+  static const String _kIntruder = 'pref_intruder';
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
@@ -48,6 +49,7 @@ class AppSettings extends ChangeNotifier {
   int _clipboardSeconds = 30;
   bool _blockScreenshots = true;
   bool _onboardingDone = false;
+  bool _intruderOn = false;
   DateTime? _lastUnlock;
   DateTime? _previousUnlock;
   bool _biometricOn = false; // kept in memory; the truth is in SecurityService
@@ -57,6 +59,10 @@ class AppSettings extends ChangeNotifier {
   int get clipboardSeconds => _clipboardSeconds;
   bool get blockScreenshots => _blockScreenshots;
   bool get onboardingDone => _onboardingDone;
+
+  /// True when a wrong-PIN streak should trigger a photo from the front
+  /// camera (Phase 7). Needs the key pair made in the Intruder photos screen.
+  bool get intruderOn => _intruderOn;
   bool get biometricOn => _biometricOn;
 
   /// When the vault was unlocked before this session (null on the first run).
@@ -86,6 +92,7 @@ class AppSettings extends ChangeNotifier {
       if (shots != null) _blockScreenshots = shots == 'true';
 
       _onboardingDone = await _storage.read(key: _kOnboarded) == 'true';
+      _intruderOn = await _storage.read(key: _kIntruder) == 'true';
 
       final last = int.tryParse(await _storage.read(key: _kLastUnlock) ?? '');
       if (last != null) _lastUnlock = DateTime.fromMillisecondsSinceEpoch(last);
@@ -138,6 +145,12 @@ class AppSettings extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setIntruderOn(bool value) async {
+    _intruderOn = value;
+    notifyListeners();
+    await _save(_kIntruder, '$value');
+  }
+
   Future<void> setOnboardingDone() async {
     _onboardingDone = true;
     notifyListeners();
@@ -160,6 +173,7 @@ class AppSettings extends ChangeNotifier {
     _clipboardSeconds = 30;
     _blockScreenshots = true;
     _onboardingDone = false;
+    _intruderOn = false;
     _biometricOn = false;
     _lastUnlock = null;
     _previousUnlock = null;

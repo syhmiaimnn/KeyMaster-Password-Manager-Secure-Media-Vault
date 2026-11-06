@@ -6,6 +6,9 @@ import 'app_lock.dart';
 import 'app_settings.dart';
 import 'change_pin_screen.dart';
 import 'confirm_pin_sheet.dart';
+import 'decoy_screen.dart';
+import 'intruder_log_screen.dart';
+import 'intruder_service.dart';
 import 'keystore_biometric.dart';
 import 'onboarding_screen.dart';
 import 'recovery_phrase_screen.dart';
@@ -28,6 +31,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final AppSettings _settings = AppSettings.instance;
   BiometricStatus _biometricStatus = BiometricStatus.unavailable;
   bool _hasPhrase = false;
+  bool _decoyOn = false;
+  int _newIntruderPhotos = 0;
   bool _busy = false;
 
   @override
@@ -37,15 +42,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   /// Reads what the security service knows: can this phone guard a key with
-  /// the fingerprint sensor, and does the vault have a recovery phrase?
+  /// the fingerprint sensor, does the vault have a recovery phrase, is a decoy
+  /// PIN set, and were there new intruder photos?
   Future<void> _loadStatus() async {
     final security = SecurityService();
     final status = await security.biometricStatus();
     final hasPhrase = await security.hasRecoveryPhrase();
+    // Only the real vault can read these two. The decoy vault never shows them.
+    final real = security.isUnlocked && !security.isDecoySession;
+    var decoyOn = false;
+    var newPhotos = 0;
+    if (real) {
+      try {
+        decoyOn = await security.isDecoyEnabled();
+        newPhotos = await IntruderService.instance.unseenCount();
+      } catch (_) {
+        // Shown as off.
+      }
+    }
     if (!mounted) return;
     setState(() {
       _biometricStatus = status;
       _hasPhrase = hasPhrase;
+      _decoyOn = decoyOn;
+      _newIntruderPhotos = newPhotos;
     });
   }
 
@@ -121,6 +141,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (!mounted) return;
     await _loadStatus();
+  }
+
+  /// Opens a real-only screen, and reads the status again when it closes.
+  Future<void> _openAndRefresh(Widget page) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (context) => page),
+    );
+    if (!mounted) return;
+    await _loadStatus();
+  }
+
+  String get _intruderSubtitle {
+    final fresh = _newIntruderPhotos > 0
+        ? ' $_newIntruderPhotos new ${_newIntruderPhotos == 1 ? 'photo' : 'photos'}.'
+        : '';
+    return _settings.intruderOn
+        ? 'On. The front camera takes a photo after 5 wrong PINs.$fresh'
+        : 'Off. Take a photo of whoever enters the PIN wrongly.$fresh';
   }
 
   void _openSpeedTest() {
@@ -283,6 +321,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _body(Palette p) {
+    // In a decoy session the rows that belong to the real vault are not shown:
+    // the decoy has no fingerprint, no recovery phrase, no PIN to change and
+    // nothing to erase from there.
+    final decoy = SecurityService().isDecoySession;
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
       children: [
@@ -294,28 +336,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SectionLabel('Security'),
         SettingGroup(
           children: [
-            SettingTile(
-              icon: Icons.fingerprint_rounded,
-              color: p.accent,
-              title: 'Fingerprint unlock',
-              subtitle: _biometricSubtitle,
-              onTap: _canToggleBiometric
-                  ? () => _toggleBiometric(!_settings.biometricOn)
-                  : null,
-              trailing: Switch(
-                value: _settings.biometricOn,
-                onChanged: _canToggleBiometric ? _toggleBiometric : null,
+            if (!decoy)
+              SettingTile(
+                icon: Icons.fingerprint_rounded,
+                color: p.accent,
+                title: 'Fingerprint unlock',
+                subtitle: _biometricSubtitle,
+                onTap: _canToggleBiometric
+                    ? () => _toggleBiometric(!_settings.biometricOn)
+                    : null,
+                trailing: Switch(
+                  value: _settings.biometricOn,
+                  onChanged: _canToggleBiometric ? _toggleBiometric : null,
+                ),
               ),
-            ),
-            SettingTile(
-              icon: Icons.key_rounded,
-              color: _hasPhrase ? p.success : p.warning,
-              title: 'Recovery phrase',
-              subtitle: _hasPhrase
-                  ? 'Set. Opens the vault if you forget the PIN.'
-                  : 'Not set up. A forgotten PIN means lost data.',
-              onTap: _busy ? null : _openRecovery,
-            ),
+            if (!decoy)
+              SettingTile(
+                icon: Icons.key_rounded,
+                color: _hasPhrase ? p.success : p.warning,
+                title: 'Recovery phrase',
+                subtitle: _hasPhrase
+                    ? 'Set. Opens the vault if you forget the PIN.'
+                    : 'Not set up. A forgotten PIN means lost data.',
+                onTap: _busy ? null : _openRecovery,
+              ),
             SettingTile(
               icon: Icons.timer_rounded,
               color: p.warning,
@@ -323,13 +367,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
               subtitle: _autoLockSubtitle(_settings.autoLockSeconds),
               onTap: _pickAutoLock,
             ),
-            SettingTile(
-              icon: Icons.pin_rounded,
-              color: p.primary,
-              title: 'Change Master PIN',
-              subtitle: 'Your data stays as it is',
-              onTap: () => _open(const ChangePinScreen()),
-            ),
+            if (!decoy)
+              SettingTile(
+                icon: Icons.pin_rounded,
+                color: p.primary,
+                title: 'Change Master PIN',
+                subtitle: 'Your data stays as it is',
+                onTap: () => _open(const ChangePinScreen()),
+              ),
+            if (!decoy)
+              SettingTile(
+                icon: Icons.theater_comedy_rounded,
+                color: p.violet,
+                title: 'Decoy vault',
+                subtitle: _decoyOn
+                    ? 'On. A second PIN opens a harmless vault.'
+                    : 'Off. A second PIN can open a harmless vault.',
+                onTap: _busy ? null : () => _openAndRefresh(const DecoyScreen()),
+              ),
+            if (!decoy)
+              SettingTile(
+                icon: Icons.camera_front_rounded,
+                color: p.danger,
+                title: 'Intruder photos',
+                subtitle: _intruderSubtitle,
+                onTap: _busy
+                    ? null
+                    : () => _openAndRefresh(const IntruderLogScreen()),
+              ),
             SettingTile(
               icon: Icons.screenshot_rounded,
               color: p.violet,
@@ -366,13 +431,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               subtitle: 'Forget the keys and return to the PIN screen',
               onTap: AppLock.instance.lockNow,
             ),
-            SettingTile(
-              icon: Icons.delete_forever_rounded,
-              title: 'Erase all data',
-              subtitle: 'Deletes everything on this phone',
-              danger: true,
-              onTap: _busy ? null : _erase,
-            ),
+            if (!decoy)
+              SettingTile(
+                icon: Icons.delete_forever_rounded,
+                title: 'Erase all data',
+                subtitle: 'Deletes everything on this phone',
+                danger: true,
+                onTap: _busy ? null : _erase,
+              ),
           ],
         ),
         const SectionLabel('Diagnostics'),
@@ -382,7 +448,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               icon: Icons.speed_rounded,
               color: p.accent,
               title: 'Test unlock speed',
-              subtitle: 'Times the real PIN key derivation on this phone',
+              subtitle: 'Times a real unlock on this phone',
               onTap: _openSpeedTest,
             ),
           ],
@@ -589,7 +655,8 @@ class _SpeedTestSheetState extends State<_SpeedTestSheet> {
         const SizedBox(height: 10),
         Text(
           'Unlocking takes about this long, plus a few milliseconds for '
-          'decryption. Write your phone model next to the numbers.',
+          'decryption. Write your phone model next to the numbers. On a phone '
+          'with one fast core the pair can take up to twice as long as one.',
           textAlign: TextAlign.center,
           style: AppText.caption.copyWith(color: p.muted),
         ),
@@ -652,8 +719,9 @@ class _SpeedTestSheetState extends State<_SpeedTestSheet> {
           const Text('Unlock speed', style: AppText.title),
           const SizedBox(height: 6),
           Text(
-            'How long the PIN takes to turn into the vault key, with the '
-            'real Argon2id settings.',
+            'How long a PIN takes to turn into keys. An unlock does this for '
+            'both vault slots at the same time, with the real Argon2id '
+            'settings, so you wait the same whichever PIN you type.',
             style: AppText.body.copyWith(color: p.muted),
           ),
           const SizedBox(height: 20),
