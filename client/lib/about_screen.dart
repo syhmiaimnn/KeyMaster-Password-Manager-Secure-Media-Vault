@@ -132,8 +132,20 @@ class AboutScreen extends StatelessWidget {
                     Icons.photo_library_rounded,
                     p.success,
                     'Photos with their own keys',
-                    'Each photo has its own key. GPS location and camera '
-                        'details are removed before it is saved.',
+                    'Each photo has its own key. Before it is saved you see '
+                        'what it gives away. Location, camera and phone '
+                        'details, dates, owner fields and thumbnails are then '
+                        'removed, and the saved copy is read back to check.',
+                  ),
+                  divider,
+                  _row(
+                    p,
+                    Icons.share_rounded,
+                    p.accent,
+                    'Clean copies for sharing',
+                    'Share a photo from the vault as a fresh copy with no '
+                        'hidden data. It is checked again just before it '
+                        'leaves, and the temporary file is deleted afterwards.',
                   ),
                   divider,
                   _row(
@@ -173,6 +185,17 @@ class AboutScreen extends StatelessWidget {
                   'sensor too weak to guard a key, and there only the PIN '
                   'works. Dart cannot guarantee that memory is wiped, so keys '
                   'are cleared on a best-effort basis.',
+            ),
+            const SizedBox(height: 12),
+            const InfoBanner(
+              icon: Icons.warning_amber_rounded,
+              text: 'Your original photo stays in the gallery until you delete '
+                  'it there. A clean copy you share belongs to the app that '
+                  'receives it. While you share, the copy sits in the '
+                  'private cache of the app for a few minutes. Cleaning '
+                  'removes hidden data in the file, not what the picture '
+                  'shows: faces, street signs and screens are not detected. '
+                  'Rebuilding a photo can also change its colours slightly.',
             ),
             const SizedBox(height: 18),
             Center(

@@ -2,8 +2,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import 'clean_share_service.dart';
 import 'media_vault_service.dart';
+import 'metadata_analysis.dart';
 import 'ui/format.dart';
+import 'ui/theme.dart';
 import 'ui/widgets.dart';
 import 'vault_item.dart';
 
@@ -35,9 +38,12 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   late final List<VaultItem> _photos = List<VaultItem>.of(widget.photos);
   late int _index = widget.initialIndex;
 
+  final CleanShareService _sharer = CleanShareService();
+
   bool _zoomed = false;
   bool _chrome = true; // are the top and bottom bars visible?
   bool _deleting = false;
+  bool _sharing = false;
 
   @override
   void dispose() {
@@ -80,6 +86,140 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
       if (_index >= _photos.length) _index = _photos.length - 1;
       _deleting = false;
     });
+  }
+
+  /// Decrypts the photo, checks it once more for hidden data, and hands the
+  /// clean copy to the share sheet.
+  Future<void> _share() async {
+    final photo = _photos[_index];
+    final ok = await confirmAction(
+      context,
+      title: 'Share a clean copy?',
+      message: 'KeyMaster makes a copy with no hidden data, checks it, and '
+          'opens the share sheet. The app you choose keeps that copy, and '
+          'KeyMaster can no longer control it. Nothing in your vault '
+          'changes.',
+      confirmLabel: 'Share',
+      icon: Icons.share_rounded,
+    );
+    if (!ok || !mounted) return;
+
+    setState(() => _sharing = true);
+    try {
+      final copy = await widget.media.exportCleanCopy(photo);
+      if (!mounted) return;
+      await _sharer.shareJpeg(copy.bytes);
+      if (!mounted) return;
+      final left = copy.check.hiddenFieldCount;
+      showToast(
+        context,
+        left == 0
+            ? 'Clean copy checked: 0 hidden fields.'
+            : 'Clean copy checked: nothing that identifies you or the place.',
+        kind: ToastKind.success,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      showToast(
+        context,
+        error is MediaVaultException
+            ? error.message
+            : 'The photo could not be shared.',
+        kind: ToastKind.error,
+      );
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  static IconData _iconFor(MetaCategory category) {
+    return switch (category) {
+      MetaCategory.location => Icons.location_on_rounded,
+      MetaCategory.owner => Icons.badge_rounded,
+      MetaCategory.time => Icons.schedule_rounded,
+      MetaCategory.device => Icons.smartphone_rounded,
+      MetaCategory.thumbnail => Icons.photo_size_select_small_rounded,
+      MetaCategory.other => Icons.more_horiz_rounded,
+      MetaCategory.settings => Icons.tune_rounded,
+      MetaCategory.image => Icons.image_rounded,
+    };
+  }
+
+  /// What was removed from this photo when it was saved. Names only.
+  void _showReport() {
+    final photo = _photos[_index];
+    final grouped = MetadataAnalysis.groupStored(photo.sanitizedTags);
+
+    showAppSheet<void>(
+      context,
+      builder: (sheetContext) {
+        final p = Palette.of(sheetContext);
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 0, 22, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Privacy report', style: AppText.title),
+              const SizedBox(height: 6),
+              Text(
+                grouped.isEmpty
+                    ? 'No removed fields are recorded for this photo. Either it '
+                        'had no hidden data, or it was saved by an older version '
+                        'of KeyMaster, which cleaned it but did not keep a list.'
+                    : 'These hidden fields were removed before the photo was '
+                        'saved. Only their names are kept, never the values.',
+                style: AppText.caption.copyWith(color: p.muted),
+              ),
+              const SizedBox(height: 16),
+              for (final category in MetaCategory.values)
+                if (grouped[category] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        IconBadge(
+                          icon: _iconFor(category),
+                          color: p.accent,
+                          size: 34,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                MetadataAnalysis.titleOf(category),
+                                style: AppText.subtitle.copyWith(fontSize: 15),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                grouped[category]!.join(' · '),
+                                style: AppText.caption.copyWith(color: p.muted),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              InfoBanner(
+                icon: Icons.verified_rounded,
+                color: p.success,
+                text: 'Each photo is read back after cleaning, and a clean '
+                    'copy is checked again just before it is shared.',
+              ),
+              const SizedBox(height: 16),
+              GradientButton(
+                label: 'Done',
+                onPressed: () => Navigator.pop(sheetContext),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Widget _chip(IconData icon, String text) {
@@ -170,11 +310,37 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Privacy report',
+                        icon: Icon(
+                          Icons.privacy_tip_rounded,
+                          color: _deleting ? Colors.white38 : Colors.white,
+                        ),
+                        onPressed: _deleting ? null : _showReport,
+                      ),
+                      IconButton(
+                        tooltip: 'Share a clean copy',
+                        icon: _sharing
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : Icon(
+                                Icons.share_rounded,
+                                color: _deleting ? Colors.white38 : Colors.white,
+                              ),
+                        onPressed: _deleting || _sharing ? null : _share,
+                      ),
+                      IconButton(
+                        tooltip: 'Delete',
                         icon: Icon(
                           Icons.delete_outline_rounded,
                           color: _deleting ? Colors.white38 : Colors.redAccent,
                         ),
-                        onPressed: _deleting ? null : _delete,
+                        onPressed: _deleting || _sharing ? null : _delete,
                       ),
                     ],
                   ),

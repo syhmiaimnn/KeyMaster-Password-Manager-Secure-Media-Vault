@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
+import 'clean_share_service.dart';
 import 'security_service.dart';
 import 'vault_store.dart';
 
@@ -20,10 +21,13 @@ class WipeService {
       // Without the vault key (deleted next) the files are unreadable anyway.
     }
 
-    // 2. Keys, items, counters and settings in secure storage
+    // 2. Any readable copy made for sharing a clean photo
+    await CleanShareService.clearTemporaryShares();
+
+    // 3. Keys, items, counters and settings in secure storage
     await SecurityService().wipeAll();
 
-    // 3. Everything still in memory
+    // 4. Everything still in memory
     VaultStore.instance.clear();
     AppSettings.instance.resetToDefaults();
     imageCache.clear();

@@ -1,17 +1,28 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'clean_share_service.dart';
 import 'media_vault_service.dart';
 import 'media_viewer_screen.dart';
+import 'sanitization_preview_screen.dart';
 import 'security_service.dart';
 import 'ui/format.dart';
 import 'ui/theme.dart';
 import 'ui/widgets.dart';
 import 'vault_item.dart';
 import 'vault_store.dart';
+
+/// What happened while a batch of photos was imported.
+class _Batch {
+  final List<ImportedPhoto> imported = <ImportedPhoto>[];
+  int failed = 0;
+  int skipped = 0;
+  String? problem;
+}
 
 /// The Photos tab: a grid of encrypted photos. Long-press to select several.
 class MediaVaultScreen extends StatefulWidget {
@@ -32,6 +43,13 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
   bool _bannerHidden = false;
 
   bool get _selecting => _selected.isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    // Remove readable copies left over from sharing a clean photo.
+    unawaited(CleanShareService.clearTemporaryShares());
+  }
 
   List<VaultItem> get _photos {
     return _store.photos..sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -75,47 +93,76 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
     if (files.isEmpty || !mounted) return;
     if (!_security.isUnlocked) return; // locked while the picker was open
 
-    final imported = <ImportedPhoto>[];
-    var failed = 0;
-    String? firstProblem;
-
-    for (var i = 0; i < files.length; i++) {
-      if (!mounted) {
-        await _discard(imported);
-        return;
-      }
-      setState(() => _busyText = 'Encrypting photo ${i + 1} of ${files.length}...');
-      try {
-        final bytes = await files[i].readAsBytes();
-        imported.add(await _media.importPhoto(bytes));
-      } catch (error) {
-        failed++;
-        firstProblem ??= error is MediaVaultException ? error.message : null;
-      } finally {
-        await _deleteTempCopy(files[i]);
-      }
-    }
-
-    if (imported.isNotEmpty) {
-      try {
-        await _store.addAll(imported.map((photo) => photo.item));
-      } catch (_) {
-        // The records were not saved, so the files would have no key.
-        await _discard(imported);
-        failed += imported.length;
-        imported.clear();
-        firstProblem = 'The vault could not be saved. Please try again.';
+    final batch = _Batch();
+    try {
+      await _process(files, batch);
+    } finally {
+      // image_picker copies each choice into the app's cache as a normal,
+      // readable file. Delete every copy, whatever happened.
+      for (final file in files) {
+        await _deleteTempCopy(file);
       }
     }
 
     if (!mounted) return;
     setState(() => _busyText = null);
-    await _showReport(imported, failed, firstProblem);
+    if (batch.imported.isEmpty && batch.failed == 0) {
+      showToast(context, 'Nothing was added.');
+      return;
+    }
+    await _showReport(batch);
   }
 
-  Future<void> _discard(List<ImportedPhoto> photos) async {
-    for (final photo in photos) {
-      await _media.deletePhotoFiles(photo.item);
+  /// Goes through the photos one by one. Each photo gets a privacy preview,
+  /// unless the user chose to clean all the remaining ones without looking.
+  Future<void> _process(List<XFile> files, _Batch batch) async {
+    var cleanRest = false;
+
+    for (var i = 0; i < files.length; i++) {
+      if (!mounted || !_security.isUnlocked) return;
+      try {
+        setState(() => _busyText = 'Reading photo ${i + 1} of ${files.length}...');
+        final bytes = await files[i].readAsBytes();
+        final before = await _media.analyze(bytes);
+        if (!mounted) return;
+
+        if (cleanRest) {
+          setState(() => _busyText = 'Cleaning photo ${i + 1} of ${files.length}...');
+          batch.imported.add(await importIntoVault(_media, bytes, before: before));
+          continue;
+        }
+
+        setState(() => _busyText = null);
+        final result = await Navigator.of(context).push<PreviewResult>(
+          MaterialPageRoute<PreviewResult>(
+            builder: (context) => SanitizationPreviewScreen(
+              bytes: bytes,
+              before: before,
+              media: _media,
+              position: i + 1,
+              total: files.length,
+            ),
+          ),
+        );
+        if (!mounted) return;
+
+        if (result == null || result.action == PreviewAction.stopAll) {
+          batch.skipped += files.length - i;
+          return;
+        }
+        if (result.action == PreviewAction.saved && result.photo != null) {
+          batch.imported.add(result.photo!);
+          cleanRest = result.cleanRest;
+        } else if (result.action == PreviewAction.failed) {
+          batch.failed++;
+          batch.problem ??= result.error;
+        } else {
+          batch.skipped++;
+        }
+      } catch (error) {
+        batch.failed++;
+        batch.problem ??= error is MediaVaultException ? error.message : null;
+      }
     }
   }
 
@@ -148,15 +195,17 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
     );
   }
 
-  Future<void> _showReport(
-    List<ImportedPhoto> imported,
-    int failed,
-    String? problem,
-  ) async {
+  Future<void> _showReport(_Batch batch) async {
     if (!mounted) return;
-    final withLocation = imported.where((photo) => photo.report.hadLocation).length;
-    final withCamera = imported.where((photo) => photo.report.hadCameraInfo).length;
-    final tagCount = imported.fold<int>(0, (sum, photo) => sum + photo.report.tagCount);
+    final imported = batch.imported;
+    final failed = batch.failed;
+    final withLocation = imported.where((photo) => photo.before.hasLocation).length;
+    final withDevice = imported.where((photo) => photo.before.hasDevice).length;
+    final withOwner = imported.where((photo) => photo.before.hasOwner).length;
+    final removed = imported.fold<int>(
+      0,
+      (sum, photo) => sum + photo.before.hiddenFieldCount,
+    );
 
     await showAppSheet<void>(
       context,
@@ -186,9 +235,9 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
                   p,
                   Icons.cleaning_services_rounded,
                   p.accent,
-                  tagCount > 0
-                      ? 'Hidden photo data (EXIF) removed: $tagCount fields.'
-                      : 'Hidden photo data (EXIF) removed from every photo.',
+                  removed > 0
+                      ? 'Hidden photo data removed: $removed fields.'
+                      : 'No hidden photo data was found.',
                 ),
                 _reportRow(
                   p,
@@ -201,16 +250,43 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
                 _reportRow(
                   p,
                   Icons.photo_camera_rounded,
-                  withCamera > 0 ? p.warning : p.success,
-                  withCamera > 0
-                      ? 'Camera make or model was found and removed in $withCamera photo(s).'
+                  withDevice > 0 ? p.warning : p.success,
+                  withDevice > 0
+                      ? 'Camera or phone details were found and removed in $withDevice photo(s).'
                       : 'No camera details were found.',
                 ),
-                InfoBanner(
+                if (withOwner > 0)
+                  _reportRow(
+                    p,
+                    Icons.badge_rounded,
+                    p.warning,
+                    'Owner, serial number or description fields were found '
+                    'and removed in $withOwner photo(s).',
+                  ),
+                _reportRow(
+                  p,
+                  Icons.verified_rounded,
+                  p.success,
+                  imported.length == 1
+                      ? 'The saved copy was read back and checked. Nothing that identifies you or the place is left.'
+                      : 'Every saved copy was read back and checked. Nothing that identifies you or the place is left.',
+                ),
+                const InfoBanner(
                   icon: Icons.info_outline_rounded,
-                  text: 'Your original is still in the gallery. Delete it '
-                      'there if you do not want it to stay. KeyMaster cannot '
+                  text: 'Your originals are still in the gallery. Delete them '
+                      'there if you do not want them to stay. KeyMaster cannot '
                       'do that for you yet.',
+                ),
+              ],
+              if (batch.skipped > 0) ...[
+                const SizedBox(height: 14),
+                _reportRow(
+                  p,
+                  Icons.skip_next_rounded,
+                  p.muted,
+                  batch.skipped == 1
+                      ? '1 photo was skipped.'
+                      : '${batch.skipped} photos were skipped.',
                 ),
               ],
               if (failed > 0) ...[
@@ -219,9 +295,9 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
                   p,
                   Icons.error_outline_rounded,
                   p.danger,
-                  problem == null
+                  batch.problem == null
                       ? '$failed photo(s) could not be imported.'
-                      : '$failed photo(s) could not be imported. $problem',
+                      : '$failed photo(s) could not be imported. ${batch.problem}',
                 ),
               ],
               const SizedBox(height: 10),
@@ -250,7 +326,7 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
               const Text('Add photos', style: AppText.title),
               const SizedBox(height: 6),
               Text(
-                'They are encrypted and cleaned of hidden data before they are saved.',
+                'You see what each photo gives away first. Then it is cleaned, checked and encrypted.',
                 style: AppText.caption.copyWith(color: p.muted),
               ),
               const SizedBox(height: 14),
@@ -413,8 +489,8 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Each photo has its own key. Location and camera details are '
-              'removed when you add it.',
+              'Each photo has its own key. You see its hidden data first, and '
+              'it is removed and checked when you add it.',
               style: AppText.caption.copyWith(color: p.text),
             ),
           ),
@@ -473,8 +549,8 @@ class _MediaVaultScreenState extends State<MediaVaultScreen> {
               icon: Icons.add_photo_alternate_rounded,
               color: p.accent,
               title: 'No photos yet',
-              message: 'Add photos you want to keep private. They are '
-                  'encrypted one by one and stripped of hidden data.',
+              message: 'Add photos you want to keep private. Each one is '
+                  'previewed, stripped of hidden data and encrypted.',
               actionLabel: 'Add photos',
               onAction: _busyText == null ? _showAddSheet : null,
             ),
