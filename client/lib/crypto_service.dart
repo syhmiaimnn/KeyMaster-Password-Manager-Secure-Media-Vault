@@ -156,15 +156,22 @@ class CryptoService {
     return Uint8List.fromList(hash.bytes);
   }
 
-  /// Times [runs] Argon2id key derivations with the real settings and returns
-  /// the milliseconds each one took. This is the main cost of unlocking, so it
-  /// is the number to report for the "unlock speed" requirement (NFR4).
-  Future<List<int>> benchmarkKeyDerivation(int runs) async {
+  /// Times [runs] rounds of Argon2id key derivation with the real settings and
+  /// returns the milliseconds each round took. This is the main cost of
+  /// unlocking, so it is the number to report for the "unlock speed"
+  /// requirement (NFR4).
+  ///
+  /// A round starts [parallel] derivations at the same time and waits for all
+  /// of them. Since Phase 7 an unlock checks both vault slots at once, so the
+  /// speed test uses 2 to measure what the user really waits.
+  Future<List<int>> benchmarkKeyDerivation(int runs, {int parallel = 1}) async {
     final salt = randomBytes(16);
     final results = <int>[];
     for (var i = 0; i < runs; i++) {
       final watch = Stopwatch()..start();
-      await deriveUnlockKey('benchmark-pin', salt);
+      await Future.wait([
+        for (var k = 0; k < parallel; k++) deriveUnlockKey('benchmark-pin', salt),
+      ]);
       watch.stop();
       results.add(watch.elapsedMilliseconds);
     }

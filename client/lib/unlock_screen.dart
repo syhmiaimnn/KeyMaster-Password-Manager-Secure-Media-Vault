@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'app_settings.dart';
 import 'home_shell.dart';
+import 'intruder_service.dart';
 import 'recover_access_screen.dart';
 import 'security_service.dart';
 import 'ui/format.dart';
@@ -123,6 +124,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
       _message = null;
     });
     final result = await _security.unlockWithPin(pin);
+    _maybeTakeIntruderPhoto(result);
     if (!mounted) return;
     setState(() => _working = false);
 
@@ -143,6 +145,17 @@ class _UnlockScreenState extends State<UnlockScreen> {
         setState(() => _message = 'Too many wrong PINs.');
         _startCountdown(result.wait);
     }
+  }
+
+  /// Intruder photo (FR13). From the fifth wrong PIN on, when the feature is
+  /// switched on, the front camera takes one photo. It runs in the background:
+  /// it shows nothing, never waits for the keypad, and if it fails the lock
+  /// screen carries on as if it had not been tried.
+  void _maybeTakeIntruderPhoto(UnlockResult result) {
+    if (result.status == UnlockStatus.success) return;
+    if (!AppSettings.instance.intruderOn) return;
+    if (result.failedCount < SecurityService.intruderAfterFailures) return;
+    unawaited(IntruderService.instance.capture(failedCount: result.failedCount));
   }
 
   void _enter() {

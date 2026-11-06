@@ -126,6 +126,17 @@ class _ChangePinScreenState extends State<ChangePinScreen> {
     UnlockResult result;
     try {
       result = await _security.changePin(_currentPin, pin);
+    } on PinNotAllowedException catch (e) {
+      // The new PIN already opens the other vault. Nothing was changed.
+      if (!mounted) return;
+      setState(() {
+        _working = false;
+        _problem = e.message;
+        _step = _Step.fresh;
+        _newPin = '';
+      });
+      _pad.currentState?.clear();
+      return;
     } catch (_) {
       if (!mounted) return;
       setState(() {

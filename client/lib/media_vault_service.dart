@@ -12,7 +12,9 @@ import 'key_tree.dart';
 import 'metadata_analysis.dart';
 import 'metadata_scanner.dart';
 import 'photo_folder.dart';
+import 'security_service.dart';
 import 'vault_item.dart';
+import 'vault_slot.dart';
 import 'vault_store.dart';
 
 /// A problem we can explain to the user in one sentence.
@@ -73,9 +75,51 @@ class MediaVaultService {
   // Where the files live
   // ---------------------------------------------------------------
 
-  Future<File> _file(String name) async {
+  // The real vault and the decoy vault keep their photos in two separate
+  // folders. Both folders always exist (see [ensureDirectories]), so the file
+  // layout is the same with or without a decoy PIN.
+
+  static Future<Directory> _directoryFor(VaultSlot slot) async {
     final base = await getApplicationDocumentsDirectory();
-    final folder = Directory('${base.path}${Platform.pathSeparator}media_vault');
+    return Directory('${base.path}${Platform.pathSeparator}${slot.mediaDir}');
+  }
+
+  /// Makes both photo folders if they are missing. Called when the home
+  /// screen opens, whichever vault was unlocked.
+  static Future<void> ensureDirectories() async {
+    for (final slot in VaultSlot.values) {
+      final folder = await _directoryFor(slot);
+      if (!await folder.exists()) await folder.create(recursive: true);
+    }
+  }
+
+  /// Deletes every photo file of one vault and makes the empty folder again.
+  /// Used when the decoy vault is removed or replaced.
+  static Future<void> clearSlot(VaultSlot slot) async {
+    try {
+      final folder = await _directoryFor(slot);
+      if (await folder.exists()) await folder.delete(recursive: true);
+      await folder.create(recursive: true);
+    } catch (_) {
+      // Without the folder keys the files are unreadable anyway.
+    }
+  }
+
+  /// Deletes the photo files of both vaults. Used by "Erase all data".
+  static Future<void> deleteAllFiles() async {
+    for (final slot in VaultSlot.values) {
+      try {
+        final folder = await _directoryFor(slot);
+        if (await folder.exists()) await folder.delete(recursive: true);
+      } catch (_) {
+        // Without the vault key (deleted next) the files are unreadable anyway.
+      }
+    }
+  }
+
+  /// A file in the folder of the vault that is open now.
+  Future<File> _file(String name) async {
+    final folder = await _directoryFor(SecurityService().slot);
     if (!await folder.exists()) {
       await folder.create(recursive: true);
     }

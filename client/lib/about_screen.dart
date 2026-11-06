@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'security_service.dart';
 import 'ui/theme.dart';
 import 'ui/widgets.dart';
 
@@ -35,6 +36,9 @@ class AboutScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = Palette.of(context);
     final divider = Divider(height: 1, thickness: 1, indent: 70, color: p.border);
+    // The decoy vault must not explain that it is one, so a decoy session
+    // does not show the two Phase 7 features.
+    final decoy = SecurityService().isDecoySession;
 
     return Scaffold(
       body: SafeArea(
@@ -167,6 +171,30 @@ class AboutScreen extends StatelessWidget {
                     'Five wrong PINs trigger waits that get longer each time. '
                         'The vault locks when you leave the app.',
                   ),
+                  if (!decoy) ...[
+                    divider,
+                    _row(
+                      p,
+                      Icons.theater_comedy_rounded,
+                      p.violet,
+                      'Decoy vault',
+                      'A second PIN opens a different vault with harmless '
+                          'entries. Both PINs take the same time, and the '
+                          'stored data looks the same with or without a '
+                          'decoy.',
+                    ),
+                    divider,
+                    _row(
+                      p,
+                      Icons.camera_front_rounded,
+                      p.danger,
+                      'Intruder photo',
+                      'After five wrong PINs the front camera takes a photo. '
+                          'It is locked with a public key, so it can be taken '
+                          'while the app is locked. Only the open real vault '
+                          'can unlock it.',
+                    ),
+                  ],
                   divider,
                   _row(
                     p,
@@ -208,6 +236,17 @@ class AboutScreen extends StatelessWidget {
                   'shows: faces, street signs and screens are not detected. '
                   'Rebuilding a photo can also change its colours slightly.',
             ),
+            if (!decoy) ...[
+              const SizedBox(height: 12),
+              const InfoBanner(
+                icon: Icons.theater_comedy_rounded,
+                text: 'The decoy vault hides which PIN you typed. It does not '
+                    'hide that KeyMaster has the feature, so someone who '
+                    'knows the app can look for missing settings. The '
+                    'intruder camera shows the green camera dot on Android 12 '
+                    'and newer, and it needs the camera permission.',
+              ),
+            ],
             const SizedBox(height: 18),
             Center(
               child: SoftButton(

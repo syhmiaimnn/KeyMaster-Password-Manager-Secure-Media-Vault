@@ -182,6 +182,17 @@ class _RecoverAccessScreenState extends State<RecoverAccessScreen> {
     });
     try {
       await _security.finishRecovery(pin);
+    } on PinNotAllowedException catch (e) {
+      // The new PIN already opens the other vault. Nothing was changed.
+      if (!mounted) return;
+      setState(() {
+        _working = false;
+        _stage = _Stage.fresh;
+        _newPin = '';
+        _problem = e.message;
+      });
+      _pad.currentState?.clear();
+      return;
     } catch (_) {
       if (!mounted) return;
       setState(() {

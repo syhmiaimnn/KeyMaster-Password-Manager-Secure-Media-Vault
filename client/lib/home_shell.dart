@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
 import 'app_settings.dart';
+import 'intruder_log_screen.dart';
+import 'intruder_service.dart';
 import 'media_vault_screen.dart';
+import 'media_vault_service.dart';
 import 'security_center_screen.dart';
 import 'security_service.dart';
 import 'settings_screen.dart';
@@ -27,6 +30,46 @@ class _HomeShellState extends State<HomeShell> {
     super.initState();
     _store.load(force: true);
     SecurityService().isBiometricEnabled().then(AppSettings.instance.setBiometricOn);
+    _prepareStorage();
+    _announceIntruders();
+  }
+
+  /// Both photo folders are made on every unlock, whichever vault is open, so
+  /// the file layout is the same with or without a decoy PIN.
+  Future<void> _prepareStorage() async {
+    try {
+      await MediaVaultService.ensureDirectories();
+    } catch (_) {
+      // Made again the next time a photo is saved or opened.
+    }
+  }
+
+  /// Tells the owner, once, when someone was photographed after wrong PINs.
+  /// Only the real vault does this. The decoy vault must not know about it.
+  Future<void> _announceIntruders() async {
+    final security = SecurityService();
+    if (!security.isUnlocked || security.isDecoySession) return;
+    try {
+      final count = await IntruderService.instance.unseenCount();
+      if (count == 0 || !mounted) return;
+      showToast(
+        context,
+        count == 1
+            ? 'A wrong PIN was entered and a photo was taken.'
+            : '$count wrong-PIN attempts were photographed.',
+        kind: ToastKind.warning,
+        actionLabel: 'View',
+        onAction: () {
+          Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (context) => const IntruderLogScreen(),
+            ),
+          );
+        },
+      );
+    } catch (_) {
+      // Nothing to show.
+    }
   }
 
   void _go(int index) => setState(() => _index = index);
