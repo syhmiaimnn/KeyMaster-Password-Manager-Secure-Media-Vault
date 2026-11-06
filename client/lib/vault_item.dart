@@ -13,6 +13,12 @@ class VaultItem {
   final String mimeType; // 'image/jpeg' for photos, empty for passwords and notes
   final int sizeBytes; // size of the stored photo, 0 for passwords and notes
   final String fileKey; // this photo's own random 32-byte key, as base64
+
+  /// Names of the hidden fields that were removed from this photo (for example
+  /// "GPS GPSLatitude" or "#XMP"). Names only, never the values. The photo's
+  /// Privacy report is built from this list. Photos saved before Phase 5 have
+  /// none.
+  final List<String> sanitizedTags;
   final DateTime createdAt;
 
   /// When the password (or note text) was last changed. It starts equal to
@@ -32,6 +38,7 @@ class VaultItem {
     this.mimeType = '',
     this.sizeBytes = 0,
     this.fileKey = '',
+    this.sanitizedTags = const <String>[],
     DateTime? createdAt,
     DateTime? updatedAt,
   })  : createdAt = createdAt ?? DateTime.now(),
@@ -63,6 +70,7 @@ class VaultItem {
       mimeType: mimeType,
       sizeBytes: sizeBytes,
       fileKey: fileKey,
+      sanitizedTags: sanitizedTags,
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -81,6 +89,7 @@ class VaultItem {
         'mimeType': mimeType,
         'sizeBytes': sizeBytes,
         'fileKey': fileKey,
+        'sanitizedTags': sanitizedTags,
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
       };
@@ -88,6 +97,7 @@ class VaultItem {
   factory VaultItem.fromJson(Map<String, dynamic> json) {
     final created = DateTime.parse(json['createdAt'] as String);
     final updatedText = json['updatedAt'] as String?;
+    final tagsJson = json['sanitizedTags'];
     return VaultItem(
       id: json['id'] as String,
       type: json['type'] as String,
@@ -101,6 +111,10 @@ class VaultItem {
       mimeType: json['mimeType'] as String? ?? '',
       sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
       fileKey: json['fileKey'] as String? ?? '',
+      // Records saved before Phase 5 have no list.
+      sanitizedTags: tagsJson is List
+          ? tagsJson.whereType<String>().toList()
+          : const <String>[],
       createdAt: created,
       // Records saved before Phase 3 have no updatedAt: use the creation date.
       updatedAt: updatedText == null ? created : DateTime.parse(updatedText),

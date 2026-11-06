@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app_settings.dart';
+import 'clean_share_service.dart';
 import 'clipboard_service.dart';
 import 'security_service.dart';
 import 'ui/widgets.dart';
@@ -72,6 +75,9 @@ class AppLock with WidgetsBindingObserver {
 
     security.lock(); // forget the vault key
     VaultStore.instance.clear(); // forget the decrypted list
+
+    // Delete any readable copy that was made for sharing a clean photo.
+    unawaited(CleanShareService.clearTemporaryShares());
 
     // Forget decrypted thumbnails and photos that Flutter kept for drawing
     imageCache.clear();

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:exif/exif.dart';
@@ -7,6 +8,8 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'crypto_service.dart';
+import 'metadata_analysis.dart';
+import 'metadata_scanner.dart';
 import 'vault_item.dart';
 
 /// A problem we can explain to the user in one sentence.
@@ -18,40 +21,34 @@ class MediaVaultException implements Exception {
   String toString() => message;
 }
 
-/// What the original photo carried in its hidden data (EXIF).
-class MetadataReport {
-  final int tagCount;
-  final bool hadLocation; // GPS tags
-  final bool hadCameraInfo; // camera make or model
-
-  const MetadataReport({
-    required this.tagCount,
-    required this.hadLocation,
-    required this.hadCameraInfo,
-  });
-
-  factory MetadataReport.fromTagNames(Iterable<String> names) {
-    final list = names.toList();
-    return MetadataReport(
-      tagCount: list.length,
-      hadLocation: list.any((name) => name.startsWith('GPS')),
-      hadCameraInfo:
-          list.any((name) => name.contains('Make') || name.contains('Model')),
-    );
-  }
-
-  static const MetadataReport none = MetadataReport(
-    tagCount: 0,
-    hadLocation: false,
-    hadCameraInfo: false,
-  );
-}
-
 /// The result of importing one photo.
 class ImportedPhoto {
   final VaultItem item;
-  final MetadataReport report;
-  const ImportedPhoto(this.item, this.report);
+
+  /// What the original carried in its hidden data.
+  final MetadataAnalysis before;
+
+  /// What the saved copy carries. This is read back from the cleaned file
+  /// before it is encrypted, so it is a check, not a promise.
+  final MetadataAnalysis after;
+
+  const ImportedPhoto(this.item, this.before, this.after);
+}
+
+/// A clean copy of a vault photo, ready to share.
+class CleanCopy {
+  final Uint8List bytes;
+
+  /// The result of re-reading [bytes] just before sharing.
+  final MetadataAnalysis check;
+
+  const CleanCopy(this.bytes, this.check);
+}
+
+class _Cleaned {
+  final Uint8List bytes;
+  final MetadataAnalysis after;
+  const _Cleaned(this.bytes, this.after);
 }
 
 class MediaVaultService {
@@ -82,30 +79,78 @@ class MediaVaultService {
       utf8.encode('keymaster:v1:photo:$id:$part');
 
   // ---------------------------------------------------------------
+  // Looking for hidden data
+  // ---------------------------------------------------------------
+
+  /// Lists the hidden data in a photo: the EXIF fields, plus blocks such as
+  /// XMP and IPTC. It changes nothing. The same check is used on the original
+  /// (to show the preview) and on the cleaned copy (to verify it).
+  Future<MetadataAnalysis> analyze(Uint8List bytes) async {
+    var scan = FileScan.unknown;
+    try {
+      // The scan reads the whole file, so it runs in a background isolate.
+      scan = await Isolate.run(() => MetadataScanner.scan(bytes));
+    } catch (_) {
+      // The EXIF fields below are still checked.
+    }
+    final tags = await _readTags(bytes);
+    return MetadataAnalysis.build(tags, scan);
+  }
+
+  /// Every EXIF field as name -> printable text. Binary fields (the embedded
+  /// thumbnail, the maker note) are listed by name only.
+  Future<Map<String, String>> _readTags(Uint8List bytes) async {
+    final out = <String, String>{};
+    try {
+      final raw = await readExifFromBytes(bytes);
+      for (final entry in raw.entries) {
+        final name = entry.key;
+        if (name == 'JPEGThumbnail' ||
+            name == 'TIFFThumbnail' ||
+            name.contains('MakerNote')) {
+          out[name] = '';
+          continue;
+        }
+        try {
+          out[name] = entry.value.toString();
+        } catch (_) {
+          out[name] = '';
+        }
+      }
+    } catch (_) {
+      // Not a photo with readable tags.
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------
   // Import
   // ---------------------------------------------------------------
 
   /// Cleans, encrypts and saves one photo. Returns the new record. The caller
   /// must add it to the vault list and save the list.
-  Future<ImportedPhoto> importPhoto(Uint8List original) async {
+  ///
+  /// Pass [before] when the original was already analysed (the preview screen
+  /// does this), so it is not read twice.
+  Future<ImportedPhoto> importPhoto(
+    Uint8List original, {
+    MetadataAnalysis? before,
+  }) async {
     // 1. What hidden data does the original carry?
-    var report = MetadataReport.none;
-    try {
-      final tags = await readExifFromBytes(original);
-      report = MetadataReport.fromTagNames(tags.keys);
-    } catch (_) {
-      // Not a photo with readable tags. The re-encoding below still runs.
-    }
+    final report = before ?? await analyze(original);
 
-    // 2. Re-encode as JPEG. This drops the hidden data. The photo is turned
-    //    upright first, so it does not end up sideways.
-    final clean = await _reencode(original, _photoSize, 90);
+    // 2. Re-encode as JPEG and read the result back. If anything that could
+    //    identify the owner, the place or the time is still in it, the photo
+    //    is refused.
+    final cleaned = await _sanitize(original);
+    final clean = cleaned.bytes;
+
+    // 3. The small preview is made from the clean photo and checked the same way.
     final thumb = await _reencode(clean, _thumbSize, 70);
-
-    // 3. Check the result. If a location survived, refuse to save the photo.
-    if (await _hasLocation(clean)) {
+    final thumbCheck = await analyze(thumb);
+    if (!thumbCheck.isClean) {
       throw const MediaVaultException(
-        'The location could not be removed from this photo, so it was not saved.',
+        'The preview image could not be cleaned, so the photo was not saved.',
       );
     }
 
@@ -143,17 +188,62 @@ class MediaVaultService {
       mimeType: 'image/jpeg',
       sizeBytes: clean.length,
       fileKey: base64Encode(fileKey),
+      sanitizedTags: report.storedNames(),
     );
-    return ImportedPhoto(item, report);
+    return ImportedPhoto(item, report, cleaned.after);
   }
 
-  Future<Uint8List> _reencode(Uint8List bytes, int size, int quality) async {
+  /// Re-encodes [original] as a JPEG without hidden data and checks the
+  /// result. Throws [MediaVaultException] when something is still left.
+  Future<_Cleaned> _sanitize(Uint8List original) async {
+    var clean = await _reencode(original, _photoSize, 90);
+    var after = await analyze(clean);
+
+    if (!after.isClean) {
+      // Second try, through PNG. A PNG cannot carry EXIF, and a flat picture
+      // has no extra layers (some new phones add an HDR layer to JPEGs).
+      try {
+        final flat = await _reencode(
+          original,
+          _photoSize,
+          100,
+          format: CompressFormat.png,
+        );
+        final second = await _reencode(flat, _photoSize, 90);
+        final secondAfter = await analyze(second);
+        if (secondAfter.isClean) {
+          clean = second;
+          after = secondAfter;
+        }
+      } catch (_) {
+        // Keep the first result. It is refused below.
+      }
+    }
+
+    if (!after.isClean) {
+      final left = after.residualText;
+      throw MediaVaultException(
+        left.isEmpty
+            ? 'Hidden data could not be fully removed from this photo, so it was not saved.'
+            : 'Hidden data could not be fully removed from this photo '
+                '($left), so it was not saved.',
+      );
+    }
+    return _Cleaned(clean, after);
+  }
+
+  Future<Uint8List> _reencode(
+    Uint8List bytes,
+    int size,
+    int quality, {
+    CompressFormat format = CompressFormat.jpeg,
+  }) async {
     final out = await FlutterImageCompress.compressWithList(
       bytes,
       minWidth: size,
       minHeight: size,
       quality: quality,
-      format: CompressFormat.jpeg,
+      format: format,
       keepExif: false,
       autoCorrectionAngle: true,
     );
@@ -163,15 +253,6 @@ class MediaVaultService {
       );
     }
     return out;
-  }
-
-  Future<bool> _hasLocation(Uint8List bytes) async {
-    try {
-      final tags = await readExifFromBytes(bytes);
-      return tags.keys.any((name) => name.startsWith('GPS'));
-    } catch (_) {
-      return false;
-    }
   }
 
   String _newId() {
@@ -212,6 +293,25 @@ class MediaVaultService {
       _keyOf(item),
       aad: _aad(item.id, 'thumb'),
     );
+  }
+
+  // ---------------------------------------------------------------
+  // Clean copy for sharing
+  // ---------------------------------------------------------------
+
+  /// Decrypts a photo and checks it once more before it leaves the vault.
+  /// Photos saved by this version are already clean, so this normally only
+  /// confirms it. If something is found, the photo is cleaned again first.
+  /// Throws [MediaVaultException] if the copy still carries hidden data.
+  Future<CleanCopy> exportCleanCopy(VaultItem item) async {
+    var bytes = await readPhoto(item);
+    var check = await analyze(bytes);
+    if (!check.isClean) {
+      final cleaned = await _sanitize(bytes);
+      bytes = cleaned.bytes;
+      check = cleaned.after;
+    }
+    return CleanCopy(bytes, check);
   }
 
   // ---------------------------------------------------------------
